@@ -20,7 +20,7 @@ def latest_scores() -> list[dict]:
         dates = sorted(d for d in tdir.iterdir() if (d / "scores.json").exists())
         if not dates:
             continue
-        rows.append(json.loads((dates[-1] / "scores.json").read_text()))
+        rows.append(json.loads((dates[-1] / "scores.json").read_text(encoding="utf-8")))
     rows.sort(key=lambda r: r["scores"]["category"]["points"], reverse=True)
     return rows
 
@@ -112,7 +112,7 @@ def main() -> None:
   (15/100 pts); missing data is never imputed (N/S = not scorable). Research classification only —
   not investment advice.</div>
 </div></body></html>"""
-    OUT.write_text(html)
+    OUT.write_text(html, encoding="utf-8")
     print(f"dashboard -> {OUT}")
 
 

@@ -42,7 +42,7 @@ def save_prediction(reports_dir: Path, ticker: str, day: date,
         "horizon_days": MATURITY_DAYS,
     }
     path = out_dir / "prediccion.json"
-    path.write_text(json.dumps(record, indent=2))
+    path.write_text(json.dumps(record, indent=2), encoding="utf-8")
     return path
 
 
@@ -53,7 +53,7 @@ def load_predictions(reports_dir: Path) -> list[dict]:
         return preds
     for p in sorted(reports_dir.glob("*/*/prediccion.json")):
         try:
-            rec = json.loads(p.read_text())
+            rec = json.loads(p.read_text(encoding="utf-8"))
             if all(k in rec for k in ("ticker", "date", "price", "bear", "base", "bull")):
                 preds.append(rec)
         except (json.JSONDecodeError, OSError):
@@ -121,7 +121,7 @@ def track(reports_dir: Path, memoria_dir: Path, price_fn, today: date) -> dict:
     }
 
     memoria_dir.mkdir(parents=True, exist_ok=True)
-    (memoria_dir / "calibracion.md").write_text(_render(summary))
+    (memoria_dir / "calibracion.md").write_text(_render(summary), encoding="utf-8")
     return summary
 
 

@@ -15,7 +15,14 @@ from statistics import pstdev
 
 from wbj.core.formulas import yoy
 from wbj.core.nullstates import EvidenceClass, NullState, Value
-from wbj.core.scoring import CATEGORY_WEIGHTS, Category, Dimension, anchor_score
+from wbj.core.scoring import (
+    CATEGORY_WEIGHTS,
+    COVERAGE_USABLE,
+    Category,
+    Dimension,
+    anchor_score,
+)
+from wbj.specialists import market_category, technical_category, valuation_category
 
 # --- Anchors aligned with Cerebro FIN/BUS band cutoffs (quick defaults) ---
 _A_REV_GROWTH = [(-0.10, 0.0), (0.0, 3.0), (0.10, 6.0), (0.25, 9.0), (0.40, 10.0)]
@@ -39,10 +46,15 @@ _QUICK_LABEL = {
     "valuation": "Valuation",
 }
 _NS_REASON = {
-    "market": "needs consensus estimates (engine pending)",
-    "technical": "needs price history (engine pending)",
-    "valuation": "needs market price (engine pending)",
+    "market": "necesita datos de mercado/consenso",
+    "technical": "necesita historial de precios",
+    "valuation": "necesita precio de mercado",
 }
+
+
+def _unscored_dim_names(cat: Category) -> list[str]:
+    """Names of dimensions that came back NOT_SCORABLE (for partial reasons)."""
+    return [d.name for d in cat.dimensions if d.score10_value().is_null]
 
 
 def _val(x: float | None, name: str, unit: str = "ratio") -> Value:
@@ -78,8 +90,17 @@ def _dim(name: str, max_points: float, scores: list[Value]) -> Dimension:
     return Dimension(name=name, max_points=max_points, metric_scores=[(w, s) for s in scores])
 
 
-def quick_scorecard(packet: dict) -> dict:
-    """Compute the quick 6-category scorecard from an MVP packet."""
+def quick_scorecard(packet: dict, market: dict | None = None) -> dict:
+    """Compute the 6-category scorecard from an MVP packet.
+
+    Business/Financial/Risk score from EDGAR fundamentals. When a `market`
+    bundle (`wbj.marketdata.bundle`) is supplied, Technical, Valuation and
+    the fundamentals-derivable slice of Market & Growth are scored too;
+    without it those three stay NOT_SCORABLE (preserving the offline/CLI
+    behaviour). Categories below the 70% coverage threshold are reported as
+    ``partial`` and excluded from the headline overall to keep the evidence
+    count honest.
+    """
     a = packet["annual"]
     rev, ni = a["revenue"], a["net_income"]
     ocf, capex = a["operating_cash_flow"], a["capex"]
@@ -139,38 +160,68 @@ def quick_scorecard(packet: dict) -> dict:
         ]),
     }
 
+    # Market-data-driven specialists (only when a market bundle is supplied).
+    if market is not None:
+        categories["technical"] = technical_category(
+            market.get("history", []), market.get("benchmark", []))
+        categories["valuation"] = valuation_category(packet, market)
+        categories["market"] = market_category(packet)
+
     rows: list[dict] = []
     covered_pts = 0.0
     weighted = 0.0
+    partial_keys: list[str] = []
     for key in ("business", "financial", "market", "technical", "risk", "valuation"):
         max_pts = float(CATEGORY_WEIGHTS[key])
-        if key in categories:
-            cat = categories[key]
-            cov = cat.coverage()
-            score10 = round(cat.score10(), 1) if cov > 0 else None
-            if score10 is not None:
-                covered_pts += max_pts
-                weighted += max_pts * score10
+        cat = categories.get(key)
+        cov = cat.coverage() if cat is not None else 0.0
+        score10 = round(cat.score10(), 1) if (cat is not None and cov > 0) else None
+
+        if score10 is None:
             rows.append({
                 "key": key, "label": _QUICK_LABEL[key], "max_points": max_pts,
-                "score10": score10, "points": round(cat.points(), 2),
-                "coverage": round(cov, 2), "status": "scored",
+                "score10": None, "points": None, "coverage": round(cov, 2),
+                "status": "not_scorable",
+                "reason": _NS_REASON.get(key, "sin datos suficientes"),
             })
+            continue
+
+        row = {
+            "key": key, "label": _QUICK_LABEL[key], "max_points": max_pts,
+            "score10": score10, "points": round(cat.points(), 2),
+            "coverage": round(cov, 2),
+        }
+        if cov >= COVERAGE_USABLE:
+            covered_pts += max_pts
+            weighted += max_pts * score10
+            row["status"] = "scored"
         else:
-            rows.append({
-                "key": key, "label": _QUICK_LABEL[key], "max_points": max_pts,
-                "score10": None, "points": None, "coverage": 0.0,
-                "status": "not_scorable", "reason": _NS_REASON[key],
-            })
+            # Below 70% coverage: show the partial read, flag what's missing,
+            # but do NOT let it inflate the headline evidence count.
+            partial_keys.append(key)
+            row["status"] = "partial"
+            missing = _unscored_dim_names(cat)
+            row["reason"] = (
+                f"cobertura {cov:.0%} — pendiente: {', '.join(missing)}"
+                if missing else f"cobertura {cov:.0%}"
+            )
+        rows.append(row)
 
     overall = round(weighted / covered_pts, 1) if covered_pts else None
+    note = (
+        "Scorecard con fundamentales SEC EDGAR"
+        + ("" if market is None else " + precio/volumen (Yahoo) y targets")
+        + f"; {int(covered_pts)}/100 puntos de evidencia con cobertura suficiente."
+    )
+    if partial_keys:
+        note += (
+            " Categorías parciales (no cuentan al overall): "
+            + ", ".join(_QUICK_LABEL[k] for k in partial_keys) + "."
+        )
     return {
         "categories": rows,
         "overall_10": overall,
         "evidence_points_covered": int(covered_pts),
         "evidence_points_total": 100,
-        "disclaimer": (
-            "Quick scorecard from SEC EDGAR fundamentals only; "
-            f"{int(covered_pts)}/100 evidence points covered. Not the full methodology."
-        ),
+        "disclaimer": note,
     }

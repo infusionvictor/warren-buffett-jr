@@ -121,7 +121,7 @@ def _score(v: Value, anchors: list[tuple[float, float]]) -> Value:
     return Value.of(anchor_score(v.value, anchors), unit="score", evidence_class=EvidenceClass.C)
 
 
-def _compute(packet: dict) -> dict:
+def _compute(packet: dict, market: dict | None = None) -> dict:
     a = packet["annual"]
     rev, ni = a["revenue"], a["net_income"]
     ocf, capex = a["operating_cash_flow"], a["capex"]
@@ -197,7 +197,7 @@ def _compute(packet: dict) -> dict:
                 "coverage": round(financial.coverage(), 2),
             },
         },
-        "scorecard": quick_scorecard(packet),
+        "scorecard": quick_scorecard(packet, market),
     }
 
 
@@ -226,7 +226,7 @@ def packet(ticker: str) -> None:
     settings, _, _ = _providers()
     p = _build_packet(ticker)
     path = _out_dir(settings, ticker) / "packet.json"
-    path.write_text(json.dumps(p, indent=2))
+    path.write_text(json.dumps(p, indent=2), encoding="utf-8")
     typer.echo(f"packet -> {path}")
 
 
@@ -239,20 +239,20 @@ def compute(ticker: str) -> None:
 @app.command()
 def analyze(ticker: str) -> None:
     """Run the full MVP pipeline: fetch -> packet -> compute -> save report."""
+    from wbj.marketdata import bundle
     from wbj.memoria import save_prediction
-    from wbj.targets import live_price, price_targets
 
     settings, _, _ = _providers()
     p = _build_packet(ticker)
-    result = _compute(p)
+    market = bundle(ticker, p, fmp_api_key=settings.fmp_api_key)
+    result = _compute(p, market)
 
     out = _out_dir(settings, ticker)
-    (out / "packet.json").write_text(json.dumps(p, indent=2))
-    (out / "scores.json").write_text(json.dumps(result, indent=2))
+    (out / "packet.json").write_text(json.dumps(p, indent=2), encoding="utf-8")
+    (out / "scores.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
     # Seed the agent's memory: persist today's prediction for `wbj track`.
-    targets = price_targets(p, live_price(ticker, fmp_api_key=settings.fmp_api_key))
     if save_prediction(settings.reports_dir, ticker, date.today(),
-                       result["scorecard"], targets):
+                       result["scorecard"], market["targets"]):
         typer.echo("prediccion.json guardada (memoria del agente)")
 
     m, cat = result["metrics"], result["scores"]["category"]
@@ -269,26 +269,40 @@ def analyze(ticker: str) -> None:
         f"Category {cat['name']}: {cat['points']}/{cat['max_points']} pts "
         f"(score {cat['score10']}/10, coverage {cat['coverage']:.0%})"
     )
+    _print_scorecard(result["scorecard"])
     typer.echo(f"\nSaved: {out}/packet.json, scores.json")
+
+
+def _print_scorecard(sc: dict) -> None:
+    """Render a scorecard dict as bars, handling scored/partial/not-scorable."""
+    typer.echo("--- Scorecard (6 categorías) ---")
+    for row in sc["categories"]:
+        label = row["label"]
+        if row["status"] == "scored":
+            bar = "█" * int(round(row["score10"])) + "░" * (10 - int(round(row["score10"])))
+            typer.echo(f"{label:<28} {bar}  {row['score10']}/10  ({row['points']}/{row['max_points']:.0f} pts)")
+        elif row["status"] == "partial":
+            bar = "▓" * int(round(row["score10"])) + "░" * (10 - int(round(row["score10"])))
+            typer.echo(f"{label:<28} {bar}  {row['score10']}/10  parcial — {row['reason']}")
+        else:
+            typer.echo(f"{label:<28} {'·' * 10}  N/S — {row['reason']}")
+    typer.echo(f"Overall: {sc['overall_10']}/10 sobre {sc['evidence_points_covered']}/100 pts de evidencia")
 
 
 @app.command()
 def scorecard(ticker: str) -> None:
-    """Quick 1-10 scorecard across the 6 agent categories."""
+    """1-10 scorecard across the 6 agent categories (fetches market data)."""
+    from wbj.marketdata import bundle
+
     settings, _, _ = _providers()
     p = _build_packet(ticker)
-    sc = quick_scorecard(p)
+    market = bundle(ticker, p, fmp_api_key=settings.fmp_api_key)
+    sc = quick_scorecard(p, market)
     out = _out_dir(settings, ticker)
-    (out / "scorecard.json").write_text(json.dumps(sc, indent=2))
+    (out / "scorecard.json").write_text(json.dumps(sc, indent=2), encoding="utf-8")
 
-    typer.echo(f"\n=== Quick Scorecard — {p['entity']} ({p['ticker']}) ===")
-    for row in sc["categories"]:
-        if row["status"] == "scored":
-            bar = "█" * int(round(row["score10"])) + "░" * (10 - int(round(row["score10"])))
-            typer.echo(f"{row['label']:<28} {bar}  {row['score10']}/10  ({row['points']}/{row['max_points']:.0f} pts)")
-        else:
-            typer.echo(f"{row['label']:<28} {'·' * 10}  N/S — {row['reason']}")
-    typer.echo(f"\nOverall (quick): {sc['overall_10']}/10 on {sc['evidence_points_covered']}/100 evidence pts")
+    typer.echo(f"\n=== Scorecard — {p['entity']} ({p['ticker']}) ===")
+    _print_scorecard(sc)
     typer.echo(f"Saved: {out}/scorecard.json")
 
 

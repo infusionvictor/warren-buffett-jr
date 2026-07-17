@@ -23,8 +23,9 @@ from wbj.providers.edgar import (
     TICKERS_URL,
     EdgarProvider,
 )
+from wbj.marketdata import bundle
 from wbj.screener import screen as run_screen
-from wbj.targets import live_price, narrative, price_history, price_targets
+from wbj.targets import narrative
 
 PORT = 8765
 _lock = threading.Lock()
@@ -81,16 +82,18 @@ def analyze(ticker: str) -> dict:
     from wbj.memoria import save_prediction
 
     packet = _build_packet(ticker)
-    result = _compute(packet)
-    price = live_price(ticker, fmp_api_key=settings.fmp_api_key)
-    targets = price_targets(packet, price)
+    # One bundle covers price, 1y OHLCV+volume, SPY benchmark, risk-free and
+    # targets — feeds the Technical/Valuation/Market scorers and the chart.
+    market = bundle(ticker, packet, fmp_api_key=settings.fmp_api_key)
+    result = _compute(packet, market)
+    targets = market["targets"]
     # Seed agent memory: every web analysis also records its prediction.
     save_prediction(settings.reports_dir, ticker, date.today(),
                     result["scorecard"], targets)
     result["targets"] = targets
     result["narrative"] = narrative(packet, result["scorecard"], targets)
     result["history"] = _history(packet)
-    result["chart"] = price_history(ticker)
+    result["chart"] = [{"time": r["time"], "value": r["close"]} for r in market["history"]]
     return result
 
 
@@ -199,6 +202,9 @@ PAGE = """<!doctype html>
   .track2 { height:9px; background:var(--grid); border-radius:6px; overflow:hidden; }
   .fill2 { height:100%; border-radius:6px; transition:width .5s ease; }
   .srow.ns .nm,.srow.ns .v { color:var(--muted); font-weight:500; }
+  .srow.partial .v { color:var(--ink2); }
+  .pflag { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.06em;
+    color:var(--orange); background:var(--orange-bg); padding:1px 6px; border-radius:99px; margin-left:6px; }
   .price-now { display:flex; align-items:baseline; gap:10px; margin:14px 0 4px; }
   .price-now .n { font-size:30px; font-weight:800; }
   .price-now .u { font-size:12.5px; color:var(--muted); }
@@ -328,6 +334,13 @@ function scoreHtml(d) {
         <div class="track2"><div class="fill2" data-w="${r.score10 * 10}"
           style="width:0%;background:${CAT_COLORS[r.key]}"></div></div>
         <span class="v">${r.score10.toFixed(1)}/10</span></div>`;
+    }
+    if (r.status === 'partial') {
+      return `<div class="srow partial"><span class="nm" title="${r.reason}">${r.label}
+          <em class="pflag">parcial</em></span>
+        <div class="track2"><div class="fill2" data-w="${r.score10 * 10}"
+          style="width:0%;background:${CAT_COLORS[r.key]};opacity:.45"></div></div>
+        <span class="v" title="${r.reason}">${r.score10.toFixed(1)}/10*</span></div>`;
     }
     return `<div class="srow ns"><span class="nm" title="${r.reason}">${r.label}</span>
       <div class="track2"></div><span class="v">N/S</span></div>`;

@@ -58,7 +58,7 @@ def test_track_writes_calibracion(tmp_path):
     s = track(reports, memoria, lambda t: prices.get(t), today=date(2026, 7, 17))
     assert s["total"] == 2 and s["maduras"] == 1
     assert s["hit_rate"] == 1.0  # AAA at 130 is inside [80, 150]
-    text = (memoria / "calibracion.md").read_text()
+    text = (memoria / "calibracion.md").read_text(encoding="utf-8")
     assert "AAA" in text and "en rango" in text and "en curso" in text
 
 

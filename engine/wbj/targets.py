@@ -206,10 +206,10 @@ def narrative(packet: dict, scorecard: dict, targets: dict) -> list[str]:
 
     if scorecard.get("overall_10") is not None:
         out.append(
-            f"Puntaje rapido: {scorecard['overall_10']}/10, calculado con "
+            f"Puntaje: {scorecard['overall_10']}/10, calculado con "
             f"{scorecard['evidence_points_covered']} de 100 puntos de evidencia "
-            "(las categorias de mercado, tecnico y valuacion se activan cuando "
-            "sus motores esten listos)."
+            "con cobertura suficiente (las categorias marcadas como parciales "
+            "necesitan datos de consenso o investigacion cualitativa)."
         )
 
     if targets.get("status") == "ok":
