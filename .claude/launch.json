@@ -3,8 +3,8 @@
   "configurations": [
     {
       "name": "wbj-webapp",
-      "runtimeExecutable": "/Users/victorgonzalez/Desktop/warren-buffett-jr/engine/.venv/bin/python",
-      "runtimeArgs": ["/Users/victorgonzalez/Desktop/warren-buffett-jr/engine/scripts/webapp.py"],
+      "runtimeExecutable": "engine/.venv/Scripts/python.exe",
+      "runtimeArgs": ["engine/scripts/webapp.py"],
       "port": 8765
     }
   ]
