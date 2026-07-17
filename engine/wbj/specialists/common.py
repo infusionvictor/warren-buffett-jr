@@ -203,6 +203,24 @@ class SpecialistOutput(BaseModel):
     "caps the verdict at Bad/Avoid" or "prevents an Excellent verdict"
     lowers this label (and records a `mandatory_flags` entry), never the
     points. Tasks 15-19 must follow the same discipline.
+
+    `judgment_slots` maps a `JudgmentRequest.metric_id` to the exact
+    `(dimension_name, slot_index)` of the `NOT_SCORABLE`
+    `Dimension.metric_scores` entry that request feeds, when there is one.
+    It exists because `wbj.core.scoring.Dimension.metric_scores` is a bare
+    `list[(weight, Value)]` carrying no `metric_id` — so, given only the
+    frozen envelope, there is otherwise no way for the Task 20 judgment
+    overlay to know which dimension slot a judged answer should replace and
+    rescore. A specialist that registers a judgment-only metric *as a
+    dimension member* (e.g. `financial.py`'s `FIN-GR-004`/`FIN-GR-005`,
+    members of `revenue_quality_and_growth` via its `_DIMENSION_MEMBERS`
+    table) populates this map so `wbj.overlay.merge.merge_overlay` can move
+    `category.awarded_points`/`coverage`, not just the flat `metrics` row.
+    A judgment metric with no dimension slot (a mandatory context-only list
+    like "three thesis killers", or a metric a specialist hasn't wired to a
+    slot yet) simply has no entry here and is applied to the flat `metrics`
+    row only. Defaults empty; entirely backward compatible for any output
+    that doesn't set it.
     """
 
     model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
@@ -220,6 +238,7 @@ class SpecialistOutput(BaseModel):
     mandatory_flags: list[str] = Field(default_factory=list)
     assumptions: list[str] = Field(default_factory=list)
     judgment_requests: list[JudgmentRequest] = Field(default_factory=list)
+    judgment_slots: dict[str, tuple[str, int]] = Field(default_factory=dict)
     source_lineage: list[str] = Field(default_factory=list)
     validation_tests: ValidationTestsSummary = Field(default_factory=ValidationTestsSummary)
 

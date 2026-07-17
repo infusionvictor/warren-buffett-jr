@@ -19,52 +19,50 @@ Two entry points:
 Design decisions (documented once here rather than re-litigated per call
 site):
 
-1. **Locating the Dimension slot a `JudgmentRequest` feeds.**
-   `wbj.core.scoring.Dimension.metric_scores` is a bare `list[(weight,
-   Value)]` — it carries no `metric_id`, so there is no way to recover
-   "which slot did metric X occupy" from a `Dimension` alone. Rather than
-   add that field to `Dimension`/`SpecialistOutput` (a `common.py` /
-   `scoring.py` change this task was told to avoid — "Do NOT modify
-   existing modules"), this module defines a **marker convention**: a
-   specialist that wants a `NOT_SCORABLE` dimension slot to become
-   judgment-fillable tags that slot's `Value.warnings` with
-   `judgment_marker(request.request_id)` (`"JUDGMENT_REQUIRED:<request_id>"`).
-   `merge_overlay` scans every dimension's `metric_scores` for that marker
-   and replaces the matching tuple's `Value` (same weight) once a judgment
-   resolves it.
+1. **Locating the Dimension slot a `JudgmentRequest` feeds — by metric_id,
+   via `SpecialistOutput.judgment_slots`.** `wbj.core.scoring.Dimension.
+   metric_scores` is a bare `list[(weight, Value)]` — it carries no
+   `metric_id`, so there is no way, given only a frozen `Dimension`, to
+   recover which slot a given metric occupied. Task 20 therefore reads
+   `SpecialistOutput.judgment_slots` (added to `common.py` for this task):
+   a `{metric_id -> (dimension_name, slot_index)}` map a specialist
+   populates for every judgment-only metric it registered *as a dimension
+   member*. `merge_overlay` looks up the answered request's `metric_id`
+   there and replaces exactly that `(weight, Value)` slot (same weight)
+   with the judged score, then calls `rescore`.
 
-   None of the Task 15-19 specialists emit this marker yet (they predate
-   this task and were told not to be modified for it) — `merge_overlay`
-   degrades gracefully when it's absent: the flat `output.metrics` row is
-   still updated (see point 2) and `rescore()` is still called, but a
-   judgment with no marked dimension slot leaves `category`/`coverage`
-   unchanged for that judgment (there's nothing in the dimension math to
-   move). Wiring the marker into the specialists themselves is future
-   work, not part of this task's scope.
+   A judgment whose `metric_id` has no `judgment_slots` entry (a mandatory
+   context-only list like business/market's "three thesis killers", or a
+   metric a specialist hasn't wired to a slot yet) still updates the flat
+   `output.metrics` row (see point 2), but moves no dimension math —
+   correctly, since there is no slot for it to move. `financial.py` wires
+   its `FIN-GR-004`/`FIN-GR-005` (both `revenue_quality_and_growth`
+   members); the other specialists' judgment metrics are either genuinely
+   context-only or await a Task 24 dimension slot (reported there).
 
 2. **The flat `metrics` list.** `MetricRow.metric_id` *is* a stable key
    (financial.py's judgment-only rows already follow "request.metric_id ==
    row.metric_id" exactly, e.g. `FIN-GR-004`), so `merge_overlay` always
    replaces the `MetricRow` whose `metric_id` matches the judgment
    request's `metric_id` (creating one if the specialist never registered
-   a placeholder row for it), independent of whether a marked dimension
-   slot was found.
+   a placeholder row for it), independent of whether a dimension slot was
+   found.
 
 3. **Answer -> 0-10 score.** `Judgment.answer` is `float | str | dict`
    (`wbj.schemas.overlay.Answer`). A numeric answer is used directly
-   (clamped to [0, 10]) as the metric's score. A string answer that
-   matches its request's `schema_hint` enum (`"one of A|B|C"`) is mapped
-   to an evenly spaced ordinal score, first-listed option = 10 (best) down
-   to last = 0 (worst) — a mechanical convention *of this module*, not a
-   Cerebro-defined rubric (no Cerebro doc pins e.g. "Wide moat = 10.0"),
-   used only so a judged qualitative label can move a metric out of
-   NOT_SCORABLE with an auditable, reproducible number; the exact mapping
-   is recorded in the resulting `MetricRow.warnings`. A `dict` answer (or
-   a string that isn't one of the declared enum options) cannot be reduced
-   to a single score generically and is *never* scored — per this
-   project's own rule ("Una afirmación cualitativa solo puede incluirse
-   como contexto; jamas se convierte en score salvo que una regla del
-   Cerebro lo defina explicitamente"): the answer is still recorded as
+   (clamped to [0, 10]). A string answer is scored only when its request's
+   `schema_hint` enum is a *known* ordered qualitative ladder
+   (`_ENUM_SCORE_TABLE`) — the exact vocabularies the 6 specialists emit,
+   each mapped to the 0-10 score its own specialist's methodology implies
+   (financial's `BAD/GOOD/EXCELLENT` == band 0/1/2 == 0/5/10; business's
+   moat `Wide/Narrow/None` == 10/5/0). This is deliberately *not* a
+   positional "first option = best" convention: the two real ladders point
+   in opposite directions, so position alone would silently mis-score one
+   of them. An enum not in the table, a `dict` answer, or any answer that
+   can't be reduced to a single number is *never* scored — per this
+   project's own rule (CLAUDE.md: "Una afirmación cualitativa solo puede
+   incluirse como contexto; jamás se convierte en score salvo que una regla
+   del Cerebro lo defina explícitamente"): the answer is recorded as
    context (rationale/source in the row's warnings and in
    `output.assumptions`), but the metric stays `NOT_SCORABLE` and no
    dimension slot is touched.
@@ -77,24 +75,20 @@ site):
    fails its request's `schema_hint` check, is a plausible/expected bad
    sub-agent answer — `merge_overlay` *silently skips* it (that output is
    returned unchanged for that judgment) rather than raising, so one
-   malformed answer in a batch doesn't sink the rest. Both are
-   deliberately named "rejected" in the task brief; this module documents
-   choosing hard-fail for the first and soft-skip for the second.
+   malformed answer in a batch doesn't sink the rest.
 
 5. **Output hash.** The brief says "assigns new output hash if the
    envelope carries one." `SpecialistOutput` (Task 14, `common.py`) has no
    hash field today, so this is a no-op — nothing to reassign.
 
-6. **`category.confidence`.** `rescore()` (Task 14) deliberately leaves
-   `category.confidence` untouched unless the caller updates it
-   separately, since a judgment answer changes *what* was scored, not how
-   much the underlying evidence should be trusted, and no Cerebro doc
-   defines a formula for "how a judgment shifts category confidence."
-   This module follows that lead and does not touch `category.confidence`.
-   The per-metric `MetricRow.confidence` for a judged row *is* set: to the
-   specialist's original placeholder confidence if a `NOT_SCORABLE` row
-   already existed for that `metric_id`, else 100.0 for a brand-new row (a
-   directly-supplied, sourced answer carries its own full provenance).
+6. **Confidence.** `category.confidence` is left untouched (matching
+   `rescore()`'s own documented behavior) since no Cerebro formula defines
+   how a judgment shifts category-level confidence. The *per-row*
+   `MetricRow.confidence`, however, is **recomputed from the judgment's own
+   `evidence_class`** (`_CONFIDENCE_BY_EVIDENCE_CLASS`: R=90, C=80, E=65,
+   A=45, Q=30), *not* inherited from the specialist's `NOT_SCORABLE`
+   placeholder row — whose confidence is 0.0 ("we knew nothing"), the exact
+   opposite of what a sourced, evidence-classed judgment now carries.
 """
 
 from __future__ import annotations
@@ -102,19 +96,34 @@ from __future__ import annotations
 import re
 from collections import defaultdict
 
-from wbj.core.nullstates import NullState, Value
+from wbj.core.nullstates import EvidenceClass, NullState, Value
 from wbj.core.scoring import Dimension
 from wbj.schemas.overlay import Answer, Judgment
 from wbj.specialists.common import JudgmentRequest, MetricRow, SpecialistOutput, rescore
 
-JUDGMENT_MARKER_PREFIX = "JUDGMENT_REQUIRED:"
+# Per-row confidence derived from a judgment's own evidence class (0-100),
+# so an evidenced answer carries real confidence instead of inheriting the
+# 0.0 of the specialist's "we couldn't score it" placeholder row. Mirrors
+# financial.py's `_confidence_for` ordering (R>C>E>A>Q), tuned down a notch
+# since a judgment is an out-of-band estimate, not a mechanically computed
+# value.
+_CONFIDENCE_BY_EVIDENCE_CLASS: dict[EvidenceClass, float] = {
+    EvidenceClass.R: 90.0,
+    EvidenceClass.C: 80.0,
+    EvidenceClass.E: 65.0,
+    EvidenceClass.A: 45.0,
+    EvidenceClass.Q: 30.0,
+}
 
-
-def judgment_marker(request_id: str) -> str:
-    """The `Value.warnings` marker a specialist tags a `NOT_SCORABLE`
-    dimension slot with to make it judgment-fillable (see module
-    docstring, point 1)."""
-    return f"{JUDGMENT_MARKER_PREFIX}{request_id}"
+# The ordered qualitative ladders the 6 specialists actually emit as
+# `schema_hint="one of ..."`, each mapped to the 0-10 score its own
+# specialist's methodology implies (documented, not positional guessing --
+# see module docstring point 3). Keyed by the frozenset of options so the
+# lookup is order-insensitive.
+_ENUM_SCORE_TABLE: dict[frozenset[str], dict[str, float]] = {
+    frozenset({"BAD", "GOOD", "EXCELLENT"}): {"BAD": 0.0, "GOOD": 5.0, "EXCELLENT": 10.0},
+    frozenset({"Wide", "Narrow", "None"}): {"Wide": 10.0, "Narrow": 5.0, "None": 0.0},
+}
 
 
 class UnknownJudgmentRequestError(ValueError):
@@ -135,8 +144,13 @@ def collect_requests(outputs: list[SpecialistOutput]) -> list[JudgmentRequest]:
 # --- schema_hint validation & answer -> score -------------------------------
 
 _ENUM_RE = re.compile(r"one of ([A-Za-z0-9_]+(?:\s*\|\s*[A-Za-z0-9_]+)+)", re.IGNORECASE)
-_NUMERIC_HINT_RE = re.compile(r"\bfloat\b|\bnumber\b|0-10|probability", re.IGNORECASE)
 _ARRAY_HINT_RE = re.compile(r"\barray of\b", re.IGNORECASE)
+# Scalar-number hints only: "integer 1-5", "float 0-10", "number", a bare
+# "0-10" range. Deliberately does NOT include "probability" -- that word
+# appears *inside* market.py's dict hint "{probability: 0-1, ...}", and a
+# dict hint is matched first (see `schema_hint_ok`) so the range/word tokens
+# inside its braces never reach this check.
+_NUMERIC_HINT_RE = re.compile(r"\binteger\b|\bfloat\b|\bnumber\b|\b\d+\s*-\s*\d+\b", re.IGNORECASE)
 
 
 def _enum_options(schema_hint: str) -> list[str] | None:
@@ -146,20 +160,40 @@ def _enum_options(schema_hint: str) -> list[str] | None:
     return [opt.strip() for opt in m.group(1).split("|")]
 
 
+def _is_dict_hint(schema_hint: str) -> bool:
+    """True for object-shaped hints like market.py's
+    `"{probability: 0-1, impact: usd, evidence_quality: 0-1}"` — a brace at
+    the start, or a `key: value` colon. (The `array of {...}` hints have no
+    colon and are matched by the array branch first, so this never
+    misfires on them.)"""
+    s = schema_hint.strip()
+    return s.startswith("{") or ":" in s
+
+
 def schema_hint_ok(schema_hint: str, answer: Answer) -> bool:
     """Best-effort structural check that `answer` is shaped the way
-    `schema_hint` describes. Deliberately loose (this is a sanity check on
-    an LLM's free-text answer, not a formal schema language): an
-    enum hint requires a matching string, a numeric hint requires a
-    number, an array hint requires `{"items": [...]}`; anything else
-    (dict/object-shaped hints) accepts a `dict` and otherwise falls back
-    to permissive (True) rather than guessing at an undeclared shape.
+    `schema_hint` describes. Deliberately loose (a sanity check on an LLM's
+    free-text answer, not a formal schema language). Checked in an order
+    that resolves the real-hint ambiguities:
+
+    1. `"array of ..."`      -> `{"items": [...]}`
+    2. `"one of A|B|C"`      -> a string that is one of the options
+    3. object-shaped (`"{...}"` / contains `:`) -> a `dict`
+    4. scalar-number hint    -> a real (non-bool) number
+    5. anything else         -> permissive (True)
+
+    The dict check precedes the numeric check so a hint like market.py's
+    `"{probability: 0-1, ...}"` — which contains number-range tokens inside
+    its braces — is validated as a dict, not mis-forced to a scalar number
+    (the bug this ordering fixes).
     """
+    if _ARRAY_HINT_RE.search(schema_hint):
+        return isinstance(answer, dict) and isinstance(answer.get("items"), list)
     options = _enum_options(schema_hint)
     if options is not None:
         return isinstance(answer, str) and answer.strip() in options
-    if _ARRAY_HINT_RE.search(schema_hint):
-        return isinstance(answer, dict) and isinstance(answer.get("items"), list)
+    if _is_dict_hint(schema_hint):
+        return isinstance(answer, dict)
     if _NUMERIC_HINT_RE.search(schema_hint):
         return isinstance(answer, (int, float)) and not isinstance(answer, bool)
     return True
@@ -168,7 +202,7 @@ def schema_hint_ok(schema_hint: str, answer: Answer) -> bool:
 def _score_from_answer(schema_hint: str, answer: Answer) -> tuple[float | None, str | None]:
     """Convert a validated answer into a `(score, note)` pair. `score` is
     `None` when the answer can't be reduced to a single 0-10 number (see
-    module docstring, point 3); `note` documents how the score was derived
+    module docstring point 3); `note` documents how the score was derived
     (or why it wasn't), to be recorded on the resulting `MetricRow`.
     """
     if isinstance(answer, bool):  # bool is an int subclass; not a real numeric answer
@@ -178,12 +212,15 @@ def _score_from_answer(schema_hint: str, answer: Answer) -> tuple[float | None, 
         return score, f"JUDGMENT_SCORE_FROM_NUMERIC_ANSWER: {answer!r} -> {score:.4f}"
     options = _enum_options(schema_hint)
     if options and isinstance(answer, str) and answer.strip() in options:
-        n = len(options)
-        idx = options.index(answer.strip())
-        score = 10.0 if n == 1 else 10.0 * (n - 1 - idx) / (n - 1)
-        return score, (
-            f"JUDGMENT_SCORE_FROM_ENUM_ORDINAL: {answer!r} is option {idx + 1}/{n} of "
-            f"{options!r} (first=best) -> {score:.4f}"
+        table = _ENUM_SCORE_TABLE.get(frozenset(options))
+        if table is not None:
+            score = table[answer.strip()]
+            return score, (
+                f"JUDGMENT_SCORE_FROM_ENUM_LADDER: {answer!r} in {options!r} -> {score:.4f}"
+            )
+        return None, (
+            f"JUDGMENT_ENUM_LADDER_UNKNOWN: {options!r} has no defined 0-10 ordering; "
+            "recorded as context only"
         )
     return None, "JUDGMENT_ANSWER_NOT_REDUCIBLE_TO_SCORE: recorded as context only"
 
@@ -226,10 +263,12 @@ def _apply_updates(
 ) -> SpecialistOutput:
     metrics_by_id: dict[str, MetricRow] = {row.metric_id: row for row in output.metrics}
     dimensions = list(output.dimensions)
+    dim_index_by_name = {d.name: i for i, d in enumerate(dimensions)}
     new_assumptions = list(output.assumptions)
 
     for req, judgment in updates:
         score, note = _score_from_answer(req.schema_hint, judgment.answer)
+        confidence = _CONFIDENCE_BY_EVIDENCE_CLASS.get(judgment.evidence_class, 50.0)
         warnings = [w for w in (note,) if w]
         if judgment.rationale:
             warnings.append(f"JUDGMENT_RATIONALE: {judgment.rationale}")
@@ -259,7 +298,7 @@ def _apply_updates(
             formula_id=existing.formula_id if existing else req.metric_id,
             formula_version=existing.formula_version if existing else "judgment-overlay",
             score=score if score is not None else "NOT_SCORABLE",
-            confidence=existing.confidence if existing else 100.0,
+            confidence=confidence,
             source=judgment.source,
         )
 
@@ -268,38 +307,35 @@ def _apply_updates(
             f"{judgment.answer!r} (evidence_class={judgment.evidence_class}, source={judgment.source!r})"
         )
 
-        if score is not None:
-            marker = judgment_marker(req.request_id)
-            dimensions = [_apply_marker(dim, marker, score, judgment) for dim in dimensions]
+        # Move the dimension math only when the judgment both scores AND maps
+        # to a known dimension slot (SpecialistOutput.judgment_slots).
+        slot = output.judgment_slots.get(req.metric_id)
+        if score is not None and slot is not None:
+            dim_name, slot_index = slot
+            di = dim_index_by_name.get(dim_name)
+            if di is not None:
+                dimensions[di] = _replace_slot(dimensions[di], slot_index, score, judgment)
 
     merged = rescore(output, dimensions=dimensions, metrics=list(metrics_by_id.values()))
     return merged.model_copy(update={"assumptions": new_assumptions})
 
 
-def _apply_marker(dimension: Dimension, marker: str, score: float, judgment: Judgment) -> Dimension:
-    """Replace the `metric_scores` tuple whose `Value.warnings` carries
-    `marker` (see module docstring, point 1) with a scored `Value`,
-    keeping the same weight. No-op if no slot in `dimension` carries the
-    marker.
+def _replace_slot(dimension: Dimension, slot_index: int, score: float, judgment: Judgment) -> Dimension:
+    """Replace `dimension.metric_scores[slot_index]` with a scored `Value`,
+    keeping the same weight. No-op if `slot_index` is out of range (a stale
+    `judgment_slots` entry — defended against rather than trusted blindly).
     """
-    new_scores: list[tuple[float, Value]] = []
-    changed = False
-    for weight, value in dimension.metric_scores:
-        if marker in value.warnings:
-            new_scores.append(
-                (
-                    weight,
-                    Value.of(
-                        score,
-                        unit="score",
-                        evidence_class=judgment.evidence_class,
-                        source_name=judgment.source,
-                    ),
-                )
-            )
-            changed = True
-        else:
-            new_scores.append((weight, value))
-    if not changed:
+    scores = list(dimension.metric_scores)
+    if not (0 <= slot_index < len(scores)):
         return dimension
-    return dimension.model_copy(update={"metric_scores": new_scores})
+    weight, _ = scores[slot_index]
+    scores[slot_index] = (
+        weight,
+        Value.of(
+            score,
+            unit="score",
+            evidence_class=judgment.evidence_class,
+            source_name=judgment.source,
+        ),
+    )
+    return dimension.model_copy(update={"metric_scores": scores})

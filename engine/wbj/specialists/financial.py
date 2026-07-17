@@ -1562,6 +1562,24 @@ def run(packet: Packet, overlay: dict[str, Any] | None = None) -> FinancialOutpu
 
     validation_tests = ValidationTestsSummary(passed=passed, failed=failed, warnings=warnings_count)
 
+    # ---- Judgment slots: which dimension slot each judgment-only metric feeds ----
+    # FIN-GR-004/FIN-GR-005 are registered as `revenue_quality_and_growth`
+    # members (`_DIMENSION_MEMBERS`) but left NOT_SCORABLE pending a Task 20
+    # judgment answer. Recording (dimension_name, slot_index) here lets
+    # `wbj.overlay.merge.merge_overlay` replace the exact slot and rescore,
+    # so answering the request moves `awarded_points`/`coverage`, not just
+    # the flat `metrics` row. Derived mechanically from `_DIMENSION_MEMBERS`
+    # (the same ordered table `dimensions` was assembled from above), so a
+    # judgment metric only maps to a slot if it genuinely is a dimension
+    # member; the mandatory context-only requests have no entry.
+    judgment_slots: dict[str, tuple[str, int]] = {}
+    for req in judgment_requests:
+        for dim_name in DIMENSION_NAMES:
+            members = _DIMENSION_MEMBERS[dim_name]
+            if req.metric_id in members:
+                judgment_slots[req.metric_id] = (dim_name, members.index(req.metric_id))
+                break
+
     return FinancialOutput(
         agent_id=AGENT_ID,
         status=status,
@@ -1577,6 +1595,7 @@ def run(packet: Packet, overlay: dict[str, Any] | None = None) -> FinancialOutpu
         mandatory_flags=mandatory_flags,
         assumptions=assumptions,
         judgment_requests=judgment_requests,
+        judgment_slots=judgment_slots,
         source_lineage=["packet.fundamentals.annual", "packet.fundamentals.quarterly"],
         validation_tests=validation_tests,
         core_27_metrics=core27,
