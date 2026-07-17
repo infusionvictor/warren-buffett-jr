@@ -1,0 +1,26 @@
+{
+  "data": [
+    {
+      "revenueActual": 44100000000,
+      "revenueAvg": 43200000000,
+      "revenueHigh": 45000000000,
+      "revenueLow": 41500000000,
+      "numberAnalysts": 39,
+      "period": "2026-04-26",
+      "year": 2026,
+      "quarter": 1
+    },
+    {
+      "revenueActual": null,
+      "revenueAvg": 46000000000,
+      "revenueHigh": 48500000000,
+      "revenueLow": 44000000000,
+      "numberAnalysts": 37,
+      "period": "2026-07-26",
+      "year": 2026,
+      "quarter": 2
+    }
+  ],
+  "symbol": "NVDA",
+  "freq": "quarterly"
+}

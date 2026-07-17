@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 _MAX_ATTEMPTS = 3
 _BACKOFF_SECONDS = (0.5, 1.0, 2.0)
-_REDACTED_PARAMS = frozenset({"apikey", "token"})
+_REDACTED_PARAMS = frozenset({"apikey", "token", "api_key"})
 
 
 def _redact_params(params: dict[str, Any] | None) -> dict[str, Any]:

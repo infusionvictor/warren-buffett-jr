@@ -1,0 +1,26 @@
+{
+  "earningsCalendar": [
+    {
+      "date": "2026-07-26",
+      "epsActual": null,
+      "epsEstimate": 0.9,
+      "hour": "amc",
+      "quarter": 2,
+      "revenueActual": null,
+      "revenueEstimate": 46000000000,
+      "symbol": "NVDA",
+      "year": 2026
+    },
+    {
+      "date": "2026-04-26",
+      "epsActual": 0.81,
+      "epsEstimate": 0.75,
+      "hour": "amc",
+      "quarter": 1,
+      "revenueActual": 44100000000,
+      "revenueEstimate": 43200000000,
+      "symbol": "NVDA",
+      "year": 2026
+    }
+  ]
+}

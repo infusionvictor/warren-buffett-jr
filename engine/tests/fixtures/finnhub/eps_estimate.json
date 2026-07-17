@@ -1,0 +1,26 @@
+{
+  "data": [
+    {
+      "epsActual": 0.81,
+      "epsAvg": 0.75,
+      "epsHigh": 0.82,
+      "epsLow": 0.68,
+      "numberAnalysts": 42,
+      "period": "2026-04-26",
+      "year": 2026,
+      "quarter": 1
+    },
+    {
+      "epsActual": null,
+      "epsAvg": 0.9,
+      "epsHigh": 0.98,
+      "epsLow": 0.8,
+      "numberAnalysts": 40,
+      "period": "2026-07-26",
+      "year": 2026,
+      "quarter": 2
+    }
+  ],
+  "symbol": "NVDA",
+  "freq": "quarterly"
+}
