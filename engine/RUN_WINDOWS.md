@@ -84,6 +84,21 @@ vuelve a correr `wbj scorecard <T>`. La dimensión "Earnings and revenue
 revisions" pasa de N/S a puntuada (requiere ≥5 analistas). El código ya está
 cableado y probado con fixtures — solo falta la key.
 
+## Sección de insiders (Form 4) y 13F institucional
+
+`wbj analyze <T>` y la app web incluyen una sección de **ownership** (ver
+`wbj/ownership.py`):
+
+- **Insider buying/selling (SEC Form 4):** solo se marcan como *materiales* las
+  compras o ventas de un insider que superan **$1M** en total en la ventana de
+  12 meses (umbral de la visión del proyecto), con el neto comprador/vendedor.
+- **13F institucional:** top holders (fondos reconocidos) por acciones, con
+  valor estimado y cambio trimestral.
+- El **historial del management en otras empresas exitosas** es investigación
+  cualitativa del orquestador — no se infiere de los filings.
+
+Requiere una key `FMP_API_KEY`. Sin ella la sección se muestra como *N/D*.
+
 ## Notas de Windows
 
 - Todos los archivos de texto se escriben en **UTF-8 explícito** en el código

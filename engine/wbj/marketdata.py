@@ -260,6 +260,7 @@ def bundle(ticker: str, packet: dict, settings=None) -> dict:
         targets = price_targets(packet, price)
     finally:
         client.close()
+    from wbj.ownership import ownership
     return {
         "price": price,
         "history": history,
@@ -267,4 +268,5 @@ def bundle(ticker: str, packet: dict, settings=None) -> dict:
         "risk_free": rf,
         "targets": targets,
         "consensus": consensus(ticker, settings, packet),
+        "ownership": ownership(ticker, settings, price=price),
     }

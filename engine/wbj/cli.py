@@ -246,6 +246,7 @@ def analyze(ticker: str) -> None:
     p = _build_packet(ticker)
     market = bundle(ticker, p, settings=settings)
     result = _compute(p, market)
+    result["ownership"] = market.get("ownership")
 
     out = _out_dir(settings, ticker)
     (out / "packet.json").write_text(json.dumps(p, indent=2), encoding="utf-8")
@@ -270,6 +271,7 @@ def analyze(ticker: str) -> None:
         f"(score {cat['score10']}/10, coverage {cat['coverage']:.0%})"
     )
     _print_scorecard(result["scorecard"])
+    _print_ownership(result["ownership"])
     typer.echo(f"\nSaved: {out}/packet.json, scores.json")
 
 
@@ -287,6 +289,35 @@ def _print_scorecard(sc: dict) -> None:
         else:
             typer.echo(f"{label:<28} {'·' * 10}  N/S — {row['reason']}")
     typer.echo(f"Overall: {sc['overall_10']}/10 sobre {sc['evidence_points_covered']}/100 pts de evidencia")
+
+
+def _print_ownership(own: dict | None) -> None:
+    """Print the insider (Form 4) + 13F institutional ownership section."""
+    typer.echo("--- Insiders (Form 4) & 13F institucional ---")
+    if not own:
+        typer.echo("  N/D — requiere key FMP en API/.env (SEC Form 4 + 13F)")
+        return
+    ins = own.get("insiders")
+    if ins:
+        thr = ins["material_threshold"]
+        typer.echo(f"  Insiders materiales (>{thr/1e6:.0f}M, {ins['window_months']}m):")
+        for b in ins["material_buys"]:
+            typer.echo(f"    COMPRA  {b['insider']:<26} ${b['value']/1e6:,.1f}M ({b['n']} tx)")
+        for s in ins["material_sells"]:
+            typer.echo(f"    VENTA   {s['insider']:<26} ${s['value']/1e6:,.1f}M ({s['n']} tx)")
+        net = ins["net_material_usd"]
+        typer.echo(f"    Neto material: {'+' if net>=0 else '-'}${abs(net)/1e6:,.1f}M "
+                   f"({'compra' if net>=0 else 'venta'} neta)")
+    else:
+        typer.echo("  Insiders: sin transacciones materiales (>$1M) en la ventana")
+    inst = own.get("institutions")
+    if inst:
+        typer.echo(f"  Top holders 13F (al {inst['as_of']}, {inst['n_holders_reported']} reportados):")
+        for h in inst["top_holders"][:5]:
+            val = f" ~${h['value_usd']/1e9:,.1f}B" if h["value_usd"] else ""
+            ch = "" if h["change"] is None else f" ({'+' if h['change']>=0 else ''}{h['change']/1e6:,.1f}M sh)"
+            typer.echo(f"    {h['holder']:<28} {h['shares']/1e6:,.0f}M sh{val}{ch}")
+    typer.echo("  Historial del management en otras empresas: investigación cualitativa (orquestador)")
 
 
 @app.command()
