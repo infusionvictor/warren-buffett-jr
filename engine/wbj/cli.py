@@ -38,6 +38,10 @@ _EQUITY_TAGS = ["StockholdersEquity"]
 _OP_INCOME_TAGS = ["OperatingIncomeLoss"]
 _GROSS_PROFIT_TAGS = ["GrossProfit"]
 _INTEREST_TAGS = ["InterestExpense", "InterestExpenseNonoperating"]
+_SHARES_TAGS = [
+    "WeightedAverageNumberOfDilutedSharesOutstanding",
+    "WeightedAverageNumberOfSharesOutstandingBasic",
+]
 
 # Scoring anchors (0-10) — MVP defaults, aligned with Cerebro-style bands.
 _ANCHORS_REV_GROWTH = [(-0.10, 0.0), (0.0, 3.0), (0.10, 6.0), (0.25, 9.0), (0.40, 10.0)]
@@ -57,7 +61,7 @@ def _annual_series(facts: dict, tags: list[str]) -> list[dict]:
     gaap = facts.get("facts", {}).get("us-gaap", {})
     for tag in tags:
         units = gaap.get(tag, {}).get("units", {})
-        rows = units.get("USD") or []
+        rows = units.get("USD") or units.get("shares") or []
         annual = [r for r in rows if r.get("form") == "10-K" and r.get("fp") == "FY"]
         if annual:
             # Deduplicate restatements: keep the latest filing per fiscal year end.
@@ -97,6 +101,7 @@ def _build_packet(ticker: str) -> dict:
             "operating_income": _annual_series(facts, _OP_INCOME_TAGS),
             "gross_profit": _annual_series(facts, _GROSS_PROFIT_TAGS),
             "interest_expense": _annual_series(facts, _INTEREST_TAGS),
+            "diluted_shares": _annual_series(facts, _SHARES_TAGS),
         },
     }
     if fmp.available:
