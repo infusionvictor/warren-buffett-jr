@@ -2,11 +2,20 @@
 `schema_hint_ok`, and `merge_overlay`.
 
 Uses the REAL `schema_hint` strings and the REAL `NOT_SCORABLE`-placeholder
-confidence (0.0) the 6 specialists emit -- not invented ones -- plus one
-end-to-end test that runs `financial.run()` on the NVDA fixture, answers
-its actual `FIN-GR-004`/`FIN-GR-005` judgment requests, and asserts
-category points and coverage both increase (the metric_id ->
-`judgment_slots` -> dimension-slot wiring, not just the flat metrics row).
+confidence (0.0) the 6 specialists emit -- not invented ones -- plus
+end-to-end tests that run a specialist's real `run()` on the NVDA fixture,
+answer its actual judgment requests, and assert category points and
+coverage both increase (the metric_id -> `judgment_slots` -> dimension-slot
+wiring, not just the flat metrics row): financial's `FIN-GR-004`/`FIN-GR-005`,
+business's `moat_classification`, and market's `tam_source_tier_assignment`.
+
+`risk_analysis` is deliberately NOT covered by an end-to-end test here:
+both of its JudgmentRequests (`thesis_killers`, `regulatory_legal_exposure`)
+use "array of ..." schema_hints, whose answers are `{"items": [...]}` dicts
+-- `merge.py`'s own documented rule 3 never reduces a dict answer to a
+score, so neither request can ever move a dimension slot regardless of how
+`risk.py` registers its `judgment_slots`. Forcing a slot for either would be
+the "fake slot" the wiring brief says to avoid.
 """
 
 from __future__ import annotations
@@ -26,7 +35,9 @@ from wbj.overlay.merge import (
 )
 from wbj.schemas.overlay import Judgment
 from wbj.schemas.packet import Packet
+import wbj.specialists.business as bus
 import wbj.specialists.financial as fin
+import wbj.specialists.market as mkt
 from wbj.specialists.common import (
     CategoryStats,
     JudgmentRequest,
@@ -439,6 +450,99 @@ def test_end_to_end_financial_run_answer_judgments_moves_points_and_coverage(nvd
         assert row.confidence == pytest.approx(65.0)
 
     # inherited contract still holds: category points reproduce from dimensions
+    recomputed = Category(
+        name=after.agent_id, max_points=after.category.max_points, dimensions=after.dimensions
+    ).points()
+    assert after.category.awarded_points == pytest.approx(recomputed)
+
+
+def test_end_to_end_business_run_answer_moat_judgment_moves_points_and_coverage(nvda_packet):
+    """`business.run()`'s `moat_classification` judgment is wired to a
+    NOT_SCORABLE 4th member of `moat_and_pricing_power` (equal-weighted with
+    the 3 mechanical inputs). `wacc=0.09` is supplied so the 3 mechanical
+    inputs are themselves valid (isolating the judgment-slot wiring from an
+    unrelated MISSING-wacc coverage gate, the same reason
+    `test_moat_capped_at_6_without_positive_spread` supplies a `wacc`)."""
+    before = bus.run(nvda_packet, overlay={"wacc": 0.09})
+
+    reqs = collect_requests([before])
+    req_ids = {r.request_id for r in reqs}
+    assert "business_analysis:moat_classification" in req_ids
+    assert before.judgment_slots["moat_classification"][0] == bus.DIM_MOAT
+
+    judgments = [
+        Judgment(
+            request_id=r.request_id,
+            answer="Wide",  # first of Wide|Narrow|None -> best -> 10.0
+            evidence_class=EvidenceClass.E,
+            source="claude-sub-agent:business",
+            rationale="persistent spread, stable margins, no unresolved concentration",
+        )
+        for r in reqs
+        if r.metric_id == "moat_classification"
+    ]
+    after = merge_overlay([before], judgments)[0]
+
+    assert after.category.awarded_points > before.category.awarded_points
+    assert after.coverage > before.coverage
+
+    row = next(r for r in after.metrics if r.metric_id == "moat_classification")
+    assert row.state is None
+    assert row.value == pytest.approx(10.0)
+    assert row.confidence == pytest.approx(65.0)
+
+    recomputed = Category(
+        name=after.agent_id, max_points=after.category.max_points, dimensions=after.dimensions
+    ).points()
+    assert after.category.awarded_points == pytest.approx(recomputed)
+
+
+def test_end_to_end_market_run_answer_tam_source_tier_judgment_moves_points_and_coverage(nvda_packet):
+    """`market.run()`'s `tam_source_tier_assignment` judgment is wired to a
+    NOT_SCORABLE 6th member of `tam_and_industry_tailwind` (equal-weighted
+    with the 5 mechanical inputs). `merge.py`'s numeric-answer path scores a
+    number directly (clamped to [0, 10], not through `TAM_TIER_CONFIDENCE`'s
+    tier ladder), so the highest-scoring answer this "integer 1-5" schema
+    can carry is 5; the overlay below is chosen so the 5 mechanical members
+    average below that, isolating the wiring (slot moves the score up) from
+    the (separate, real-world) fact that tier 5 is DECISION_RULES.md's
+    *lowest*-confidence source tier."""
+    overlay = {
+        "tam": 100_000.0,
+        "tam_history": [100_000.0, 100_000.0],
+        "company_relevant_revenue": 50_000.0,
+        "share": {"company_sales": 0.0, "total_market_sales": 10_000.0},
+        "share_history": [0.0, 0.0],
+        "adoption": {"current_units": 5_000.0, "eventual_units": 10_000.0},
+    }
+    before = mkt.run(nvda_packet, overlay=overlay)
+
+    reqs = collect_requests([before])
+    req_ids = {r.request_id for r in reqs}
+    assert "market_analysis:tam_source_tier_assignment" in req_ids
+    assert before.judgment_slots["tam_source_tier_assignment"][0] == mkt.DIM_TAM
+
+    judgments = [
+        Judgment(
+            request_id=r.request_id,
+            answer=5,
+            evidence_class=EvidenceClass.E,
+            source="claude-sub-agent:market",
+            rationale="best score obtainable under the integer 1-5 schema_hint",
+        )
+        for r in reqs
+        if r.metric_id == "tam_source_tier_assignment"
+    ]
+    after = merge_overlay([before], judgments)[0]
+
+    assert after.category.awarded_points > before.category.awarded_points
+    assert after.coverage > before.coverage
+
+    row = next(r for r in after.metrics if r.metric_id == "tam_source_tier_assignment")
+    assert row.state is None
+    assert row.value == pytest.approx(5.0)
+    assert row.confidence == pytest.approx(65.0)
+
     recomputed = Category(
         name=after.agent_id, max_points=after.category.max_points, dimensions=after.dimensions
     ).points()

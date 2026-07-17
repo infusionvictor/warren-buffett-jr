@@ -885,11 +885,26 @@ def run(packet: Packet, overlay: dict[str, Any] | None = None) -> MarketOutput:
     # share level, share delta, adoption) carry the dimension's weight.
     tam_source_tier = overlay.get("tam_source_tier")
     tam_confidence = TAM_TIER_CONFIDENCE.get(int(tam_source_tier)) if tam_source_tier is not None else None
+    # When the caller hasn't supplied `tam_source_tier`, `tam_source_tier_assignment`
+    # becomes a JudgmentRequest below -- registered as a sixth, NOT_SCORABLE
+    # member of this dimension (equal-weighted with the five mechanical
+    # inputs) so a Task 20 judgment answer moves `category.awarded_points`/
+    # `coverage`, not just the flat `metrics` row, mirroring `financial.py`'s
+    # `_DIMENSION_MEMBERS`-driven equal weighting. When a tier *is* supplied,
+    # there is no judgment to score and the dimension keeps its original
+    # five equally-weighted members (the tier instead feeds the confidence
+    # cap below, as before).
+    tam_needs_judgment = tam_confidence is None
+    tam_members = ("MKT-CAGR-004", "MKT-PEN-005", "MKT-SHARE-006", "MKT-SHDELTA-007", "MKT-ADOPT-021")
+    tam_weight = 1 / (len(tam_members) + 1) if tam_needs_judgment else 1 / len(tam_members)
     tam_scores: list[tuple[float, Value]] = []
-    for mid in ("MKT-CAGR-004", "MKT-PEN-005", "MKT-SHARE-006", "MKT-SHDELTA-007", "MKT-ADOPT-021"):
+    for mid in tam_members:
         s = by_id[mid].score10
-        tam_scores.append((1 / 5, Value.of(s, unit="score") if s is not None else Value.null(NullState.NOT_SCORABLE, unit="score")))
-    if tam_confidence is None:
+        tam_scores.append((tam_weight, Value.of(s, unit="score") if s is not None else Value.null(NullState.NOT_SCORABLE, unit="score")))
+    tam_source_tier_slot_index: int | None = None
+    if tam_needs_judgment:
+        tam_source_tier_slot_index = len(tam_scores)
+        tam_scores.append((tam_weight, Value.null(NullState.NOT_SCORABLE, unit="score")))  # tam_source_tier_assignment judgment slot
         judgment_requests.append(
             JudgmentRequest(
                 request_id="market_analysis:tam_source_tier_assignment",
@@ -988,6 +1003,20 @@ def run(packet: Packet, overlay: dict[str, Any] | None = None) -> MarketOutput:
         failed += 0 if ok else 1
     validation_tests = ValidationTestsSummary(passed=passed, failed=failed, warnings=0)
 
+    # ---- Judgment slots: which dimension slot each judgment-only metric feeds ----
+    # `tam_source_tier_assignment` is registered as `tam_scores[tam_source_tier_slot_index]`
+    # above (only when the judgment was actually requested); recording it here
+    # lets `wbj.overlay.merge.merge_overlay` replace that exact slot and
+    # rescore once a judgment answer arrives, exactly like `financial.py`'s
+    # `FIN-GR-004`/`FIN-GR-005`. The catalyst-assessment and thesis-killer
+    # requests have no dimension slot (their answers are dict/array-shaped
+    # and never reduce to a single 0-10 score under `merge.py`'s documented
+    # answer-scoring rules, so there is no slot for them to move) and are
+    # deliberately absent from this map.
+    judgment_slots: dict[str, tuple[str, int]] = {}
+    if tam_source_tier_slot_index is not None:
+        judgment_slots["tam_source_tier_assignment"] = (DIM_TAM, tam_source_tier_slot_index)
+
     return MarketOutput(
         agent_id=AGENT_ID,
         status=status,
@@ -1003,6 +1032,7 @@ def run(packet: Packet, overlay: dict[str, Any] | None = None) -> MarketOutput:
         mandatory_flags=mandatory_flags,
         assumptions=assumptions,
         judgment_requests=judgment_requests,
+        judgment_slots=judgment_slots,
         source_lineage=["packet.fundamentals.annual", "packet.market_data.sector", "packet.market_data.benchmark"],
         validation_tests=validation_tests,
         market_definition=None,

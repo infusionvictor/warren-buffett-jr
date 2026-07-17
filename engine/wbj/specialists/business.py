@@ -998,11 +998,20 @@ def run(packet: Packet, overlay: dict[str, Any] | None = None) -> BusinessOutput
         _ok(persistence_frac, unit="ratio") if persistence_frac is not None
         else _null(NullState.MISSING, "ratio", "SPREAD_PERSISTENCE_INSUFFICIENT_HISTORY")
     )
+    # `moat_classification` (the JudgmentRequest below) is registered as a
+    # fourth, NOT_SCORABLE member of this dimension (equal-weighted with the
+    # three mechanical inputs, mirroring `financial.py`'s
+    # `_DIMENSION_MEMBERS`-driven equal weighting) so that a Task 20 judgment
+    # answer moves `category.awarded_points`/`coverage`, not just the flat
+    # `metrics` row -- see `MOAT_CLASSIFICATION_SLOT_INDEX` and
+    # `SpecialistOutput.judgment_slots`.
     moat_scores: list[tuple[float, Value]] = [
-        (1 / 3, Value.of(by_id["BUS-SPREAD-014"].score10, unit="score") if by_id["BUS-SPREAD-014"].score10 is not None else Value.null(NullState.NOT_SCORABLE, unit="score")),
-        (1 / 3, Value.of(by_id["BUS-RANGE-010"].score10, unit="score") if by_id["BUS-RANGE-010"].score10 is not None else Value.null(NullState.NOT_SCORABLE, unit="score")),
-        (1 / 3, Value.of(anchor_score(persistence_frac, [(0.0, 0), (0.5, 5), (0.8, 8), (1.0, 10)]), unit="score") if v_persistence.is_valid else Value.null(NullState.NOT_SCORABLE, unit="score")),
+        (0.25, Value.of(by_id["BUS-SPREAD-014"].score10, unit="score") if by_id["BUS-SPREAD-014"].score10 is not None else Value.null(NullState.NOT_SCORABLE, unit="score")),
+        (0.25, Value.of(by_id["BUS-RANGE-010"].score10, unit="score") if by_id["BUS-RANGE-010"].score10 is not None else Value.null(NullState.NOT_SCORABLE, unit="score")),
+        (0.25, Value.of(anchor_score(persistence_frac, [(0.0, 0), (0.5, 5), (0.8, 8), (1.0, 10)]), unit="score") if v_persistence.is_valid else Value.null(NullState.NOT_SCORABLE, unit="score")),
+        (0.25, Value.null(NullState.NOT_SCORABLE, unit="score")),  # moat_classification judgment slot
     ]
+    MOAT_CLASSIFICATION_SLOT_INDEX = 3
     positive_spread = ctx["spread_latest"] is not None and ctx["spread_latest"] > 0
     if not positive_spread:
         moat_scores = apply_dimension_cap(moat_scores, cap=6.0)
@@ -1154,6 +1163,17 @@ def run(packet: Packet, overlay: dict[str, Any] | None = None) -> BusinessOutput
         failed += 0 if ok else 1
     validation_tests = ValidationTestsSummary(passed=passed, failed=failed, warnings=0)
 
+    # ---- Judgment slots: which dimension slot each judgment-only metric feeds ----
+    # `moat_classification` is registered as `moat_scores[MOAT_CLASSIFICATION_SLOT_INDEX]`
+    # above; recording it here lets `wbj.overlay.merge.merge_overlay` replace that
+    # exact slot and rescore once a judgment answer arrives, exactly like
+    # `financial.py`'s `FIN-GR-004`/`FIN-GR-005`. `moat_quantitative_effects_count`
+    # and `three_thesis_killers` have no dimension slot (mandatory context-only
+    # lists) and so are deliberately absent from this map.
+    judgment_slots: dict[str, tuple[str, int]] = {
+        "moat_classification": (DIM_MOAT, MOAT_CLASSIFICATION_SLOT_INDEX),
+    }
+
     return BusinessOutput(
         agent_id=AGENT_ID,
         status=status,
@@ -1169,6 +1189,7 @@ def run(packet: Packet, overlay: dict[str, Any] | None = None) -> BusinessOutput
         mandatory_flags=mandatory_flags,
         assumptions=assumptions,
         judgment_requests=judgment_requests,
+        judgment_slots=judgment_slots,
         source_lineage=["packet.fundamentals.annual"],
         validation_tests=validation_tests,
         business_in_one_sentence=None,
