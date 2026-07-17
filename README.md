@@ -38,7 +38,35 @@ Si falta data, el sistema responde `NOT_SCORABLE` — nunca reemplaza evidencia 
 | `Sub Agentes/` | Workspace y outputs de los especialistas |
 | `Referencias/` | Material de referencia adicional |
 
-## Cómo usarlo
+## Inicio rápido (app web) 🚀
+
+Requisitos: Python 3.11+ y git. No necesitas API keys para empezar — los
+fundamentales vienen de SEC EDGAR (gratis) y el precio de Yahoo.
+
+```bash
+git clone https://github.com/infusionvictor/warren-buffett-jr.git
+cd warren-buffett-jr/engine
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"
+python scripts/webapp.py     # -> abre http://localhost:8765
+```
+
+En la página puedes:
+- **Buscar** cualquier empresa de EE.UU. por ticker o nombre
+- Ver la **explicación en palabras simples**, el **scorecard 1-10** de los
+  agentes, la **gráfica con targets Bull/Medio/Bear** a 12 meses
+- **✨ Descubrir empresas** — screener que encuentra compañías medianas,
+  rentables y en crecimiento que quizás no conoces
+
+También hay CLI: `wbj analyze NVDA`, `wbj scorecard NVDA`, `wbj screen`.
+
+Opcional: copia tus API keys (FMP, FinnHub, FRED) en `API/.env` para
+enriquecer los datos. Esa carpeta está en `.gitignore` — nunca se sube.
+
+> ⚠️ Todo el output es **clasificación de research** con supuestos
+> declarados — no es asesoría de inversión ni recomendación de compra/venta.
+
+## Cómo usarlo (sistema multi-agente completo)
 
 Desde esta carpeta, abre Claude Code y pide un análisis:
 
@@ -46,7 +74,7 @@ Desde esta carpeta, abre Claude Code y pide un análisis:
 Analiza NVDA
 ```
 
-El orquestador armará el packet de datos, correrá los 6 especialistas en paralelo, aplicará gates y overrides, y entregará el reporte final con niveles de confirmación/invalidación y trail de auditoría.
+El orquestador armará el packet de datos, correrá los 6 especialistas en paralelo, aplicará gates y overrides, y entregará el reporte final con niveles de confirmación/invalidación y trail de auditoría. *(El motor Python completo — indicadores técnicos, DCF institucional, los 6 especialistas — está en construcción: ver `RESUME.md`.)*
 
 ## Perfil del inversionista (resumen)
 

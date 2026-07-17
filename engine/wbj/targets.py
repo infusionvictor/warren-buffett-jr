@@ -126,6 +126,40 @@ def price_targets(packet: dict, price: float | None) -> dict:
     }
 
 
+def price_history(
+    ticker: str,
+    client: httpx.Client | None = None,
+) -> list[dict]:
+    """Daily closes for the last year (Yahoo, keyless) for the chart:
+    [{"time": "YYYY-MM-DD", "value": close}, ...]. Empty list on failure."""
+    from datetime import datetime, timezone
+
+    own = client is None
+    client = client or httpx.Client(timeout=8.0)
+    try:
+        r = client.get(
+            _YAHOO_URL.format(t=ticker.upper()),
+            params={"range": "1y", "interval": "1d"},
+            headers=_YAHOO_HEADERS,
+        )
+        if r.status_code != 200:
+            return []
+        result = r.json()["chart"]["result"][0]
+        stamps = result.get("timestamp") or []
+        closes = result["indicators"]["quote"][0].get("close") or []
+        out = []
+        for ts, c in zip(stamps, closes):
+            if isinstance(c, (int, float)):
+                day = datetime.fromtimestamp(ts, tz=timezone.utc).date().isoformat()
+                out.append({"time": day, "value": round(float(c), 2)})
+        return out
+    except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError):
+        return []
+    finally:
+        if own:
+            client.close()
+
+
 # ---------------------------------------------------------------- narrative
 
 def _fmt_b(x: float) -> str:

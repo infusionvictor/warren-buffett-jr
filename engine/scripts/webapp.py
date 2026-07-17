@@ -24,7 +24,7 @@ from wbj.providers.edgar import (
     EdgarProvider,
 )
 from wbj.screener import screen as run_screen
-from wbj.targets import live_price, narrative, price_targets
+from wbj.targets import live_price, narrative, price_history, price_targets
 
 PORT = 8765
 _lock = threading.Lock()
@@ -83,6 +83,7 @@ def analyze(ticker: str) -> dict:
     result["targets"] = targets
     result["narrative"] = narrative(packet, result["scorecard"], targets)
     result["history"] = _history(packet)
+    result["chart"] = price_history(ticker)
     return result
 
 
@@ -139,8 +140,23 @@ PAGE = """<!doctype html>
   .card { background:var(--card); border-radius:18px; padding:24px;
     box-shadow:0 1px 3px rgba(20,22,30,.06); }
   .c-hero { grid-column:span 7; } .c-words { grid-column:span 5; }
+  .c-chart { grid-column:span 12; background:#0e1113; color:#e8eaed; }
   .c-score { grid-column:span 5; } .c-target { grid-column:span 7; }
-  @media (max-width:860px) { .c-hero,.c-words,.c-score,.c-target { grid-column:span 12; } }
+  @media (max-width:860px) { .c-hero,.c-words,.c-chart,.c-score,.c-target { grid-column:span 12; } }
+  .c-chart h2 { color:#fff; } .c-chart .sub { color:#8b929c; }
+  .chart-head { display:flex; align-items:baseline; gap:14px; flex-wrap:wrap; margin:8px 0 4px; }
+  .chart-head .px { font-size:34px; font-weight:800; letter-spacing:-.02em; }
+  .chart-head .chg { font-size:14px; font-weight:700; }
+  .chart-head .chg.up { color:#26d07c; } .chart-head .chg.down { color:#ff5a5f; }
+  .chart-head .rng { color:#8b929c; font-size:13px; }
+  #tvchart { height:340px; margin-top:10px; }
+  .periods { display:flex; gap:8px; margin-top:12px; }
+  .periods button { font:inherit; font-size:13px; font-weight:700; padding:6px 16px;
+    border:0; border-radius:99px; background:transparent; color:#8b929c; cursor:pointer; }
+  .periods button.on { background:#1d2b22; color:#26d07c; }
+  .tglegend { display:flex; gap:18px; margin-top:10px; font-size:12.5px; flex-wrap:wrap; }
+  .tglegend span { display:inline-flex; align-items:center; gap:7px; color:#aab1bb; }
+  .tglegend i { width:18px; border-top:2px dashed; display:inline-block; }
   .card h2 { font-size:16px; font-weight:700; }
   .card .sub { color:var(--muted); font-size:12.5px; margin-top:3px; }
   .hero-num { display:flex; align-items:baseline; gap:12px; margin:16px 0 4px; }
@@ -217,6 +233,7 @@ PAGE = """<!doctype html>
   <div class="grid" id="grid">
     <div class="card c-hero" id="heroCard"></div>
     <div class="card c-words" id="wordsCard"></div>
+    <div class="card c-chart" id="chartCard"></div>
     <div class="card c-score" id="scoreCard"></div>
     <div class="card c-target" id="targetCard"></div>
   </div>
@@ -351,6 +368,103 @@ function targetHtml(d) {
     <div class="sub" style="margin-top:12px">${t.disclaimer}</div>`;
 }
 
+// --- Gráfica SVG propia (cero dependencias externas) ---------------------
+let tvData = [], tvTargets = null;
+const PERIODS = { '1M': 21, '3M': 63, '6M': 126, '1A': 9999 };
+
+function renderChart(d) {
+  const el = document.getElementById('chartCard');
+  tvData = d.chart || [];
+  tvTargets = d.targets && d.targets.status === 'ok' ? d.targets : null;
+  if (!tvData.length) {
+    el.innerHTML = `<h2>Gráfica y targets</h2>
+      <div class="sub">Sin historial de precio disponible para ${d.ticker}.</div>`;
+    return;
+  }
+  el.innerHTML = `<h2>${d.ticker} — precio y targets</h2>
+    <div class="sub">Último año · targets a 12 meses con supuestos declarados</div>
+    <div class="chart-head" id="chartHead"></div>
+    <div id="tvchart"></div>
+    <div class="periods" id="periods">
+      ${Object.keys(PERIODS).map(p =>
+        `<button data-p="${p}" class="${p === '1A' ? 'on' : ''}">${p}</button>`).join('')}
+    </div>`;
+  document.getElementById('periods').addEventListener('click', e => {
+    const b = e.target.closest('button'); if (!b) return;
+    document.querySelectorAll('.periods button').forEach(x => x.classList.toggle('on', x === b));
+    setPeriod(b.dataset.p);
+  });
+  setPeriod('1A');
+}
+
+function setPeriod(p) {
+  const slice = tvData.slice(-PERIODS[p]);
+  const W = 1000, H = 340, PADL = 14, PADR = 150, PADT = 18, PADB = 30;
+  const vals = slice.map(r => r.value);
+  const tg = tvTargets ? tvTargets.scenarios.map(s => s.target) : [];
+  let lo = Math.min(...vals, ...(tg.length ? tg : vals));
+  let hi = Math.max(...vals, ...(tg.length ? tg : vals));
+  const pad = (hi - lo) * 0.07 || 1; lo -= pad; hi += pad;
+  const X = i => PADL + i / (slice.length - 1) * (W - PADL - PADR);
+  const Y = v => PADT + (1 - (v - lo) / (hi - lo)) * (H - PADT - PADB);
+
+  const pts = slice.map((r, i) => `${X(i).toFixed(1)},${Y(r.value).toFixed(1)}`).join(' ');
+  const area = `M ${X(0).toFixed(1)},${(H - PADB)} L ${pts.replaceAll(' ', ' L ')} L ${X(slice.length - 1).toFixed(1)},${H - PADB} Z`;
+
+  // grid + eje de fechas
+  const grid = [0.25, 0.5, 0.75].map(f => {
+    const y = PADT + f * (H - PADT - PADB);
+    return `<line x1="${PADL}" x2="${W - PADR + 60}" y1="${y}" y2="${y}"
+      stroke="rgba(139,146,156,.14)" stroke-width="1"/>`;
+  }).join('');
+  const dates = [0, Math.floor(slice.length / 2), slice.length - 1].map(i =>
+    `<text x="${X(i)}" y="${H - 8}" fill="#8b929c" font-size="11.5"
+      text-anchor="${i === 0 ? 'start' : i === slice.length - 1 ? 'end' : 'middle'}">${slice[i].time}</text>`).join('');
+
+  // líneas de target punteadas con etiqueta tipo píldora (como la referencia)
+  let tlines = '';
+  if (tvTargets) {
+    const by = {}; tvTargets.scenarios.forEach(s => by[s.key] = s);
+    const defs = [
+      ['bull', '#26d07c', 'rgba(38,208,124,.14)', 'Bull'],
+      ['base', '#f5a623', 'rgba(245,166,35,.14)', 'Medio'],
+      ['bear', '#ff5a5f', 'rgba(255,90,95,.14)', 'Bear'],
+    ];
+    tlines = defs.map(([k, c, bg, lb]) => {
+      const s = by[k], y = Y(s.target);
+      const label = `${lb} $${s.target.toFixed(0)} (${s.upside >= 0 ? '+' : ''}${(s.upside * 100).toFixed(0)}%)`;
+      return `<line x1="${PADL}" x2="${W - PADR + 4}" y1="${y}" y2="${y}"
+          stroke="${c}" stroke-width="1.3" stroke-dasharray="7 6" opacity=".9"/>
+        <rect x="${W - PADR + 8}" y="${y - 12}" width="${PADR - 16}" height="24" rx="7"
+          fill="${bg}" stroke="${c}" stroke-width="1"/>
+        <text x="${W - PADR / 2}" y="${y + 4}" fill="${c}" font-size="12.5"
+          font-weight="700" text-anchor="middle">${label}</text>`;
+    }).join('');
+  }
+
+  document.getElementById('tvchart').innerHTML = `
+    <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block"
+        font-family="system-ui,-apple-system,sans-serif">
+      <defs><linearGradient id="ga" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="rgba(38,208,124,.28)"/>
+        <stop offset="1" stop-color="rgba(38,208,124,.02)"/>
+      </linearGradient></defs>
+      ${grid}
+      <path d="${area}" fill="url(#ga)"/>
+      <polyline points="${pts}" fill="none" stroke="#26d07c" stroke-width="2.2"
+        stroke-linejoin="round" stroke-linecap="round"/>
+      ${tlines}${dates}
+    </svg>`;
+
+  const first = slice[0].value, last = slice[slice.length - 1].value;
+  const chg = last - first, pct = chg / first * 100;
+  document.getElementById('chartHead').innerHTML = `
+    <span class="px">$${last.toLocaleString('en-US', {minimumFractionDigits: 2})}</span>
+    <span class="chg ${chg >= 0 ? 'up' : 'down'}">${chg >= 0 ? '+' : ''}$${Math.abs(chg).toFixed(2)}
+      (${chg >= 0 ? '+' : ''}${pct.toFixed(2)}%)</span>
+    <span class="rng">${p}</span>`;
+}
+
 const screenCard = document.getElementById('screenCard');
 document.getElementById('discoverBtn').addEventListener('click', async () => {
   grid.style.display = 'none'; screenCard.style.display = 'none';
@@ -403,6 +517,7 @@ async function run(t) {
     document.getElementById('scoreCard').innerHTML = scoreHtml(d);
     document.getElementById('targetCard').innerHTML = targetHtml(d);
     grid.style.display = 'grid';
+    renderChart(d);
     status.textContent = '';
     requestAnimationFrame(() => {
       document.querySelectorAll('.stick[data-h]').forEach(b => b.style.height = b.dataset.h + '%');
