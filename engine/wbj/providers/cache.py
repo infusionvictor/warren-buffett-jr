@@ -30,7 +30,7 @@ class Cache:
         if not path.exists():
             return None
         try:
-            return json.loads(path.read_text())
+            return json.loads(path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             return None
 
@@ -49,7 +49,7 @@ class Cache:
             "fetched_at": datetime.now(timezone.utc).isoformat(),
             "payload": payload,
         }
-        path.write_text(json.dumps(record))
+        path.write_text(json.dumps(record), encoding="utf-8")
 
     def age_days(self, ticker: str, key: str) -> float | None:
         """Return the cache entry's age in days, or None if absent/corrupt."""

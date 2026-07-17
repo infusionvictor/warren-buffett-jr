@@ -23,8 +23,9 @@ from wbj.providers.edgar import (
     TICKERS_URL,
     EdgarProvider,
 )
+from wbj.marketdata import bundle
 from wbj.screener import screen as run_screen
-from wbj.targets import live_price, narrative, price_history, price_targets
+from wbj.targets import narrative
 
 PORT = 8765
 _lock = threading.Lock()
@@ -81,16 +82,19 @@ def analyze(ticker: str) -> dict:
     from wbj.memoria import save_prediction
 
     packet = _build_packet(ticker)
-    result = _compute(packet)
-    price = live_price(ticker, fmp_api_key=settings.fmp_api_key)
-    targets = price_targets(packet, price)
+    # One bundle covers price, 1y OHLCV+volume, SPY benchmark, risk-free and
+    # targets — feeds the Technical/Valuation/Market scorers and the chart.
+    market = bundle(ticker, packet, settings=settings)
+    result = _compute(packet, market)
+    targets = market["targets"]
     # Seed agent memory: every web analysis also records its prediction.
     save_prediction(settings.reports_dir, ticker, date.today(),
                     result["scorecard"], targets)
     result["targets"] = targets
     result["narrative"] = narrative(packet, result["scorecard"], targets)
     result["history"] = _history(packet)
-    result["chart"] = price_history(ticker)
+    result["chart"] = [{"time": r["time"], "value": r["close"]} for r in market["history"]]
+    result["ownership"] = market.get("ownership")
     return result
 
 
@@ -149,7 +153,8 @@ PAGE = """<!doctype html>
   .c-hero { grid-column:span 7; } .c-words { grid-column:span 5; }
   .c-chart { grid-column:span 12; background:#0e1113; color:#e8eaed; }
   .c-score { grid-column:span 5; } .c-target { grid-column:span 7; }
-  @media (max-width:860px) { .c-hero,.c-words,.c-chart,.c-score,.c-target { grid-column:span 12; } }
+  .c-own { grid-column:span 12; }
+  @media (max-width:860px) { .c-hero,.c-words,.c-chart,.c-score,.c-target,.c-own { grid-column:span 12; } }
   .c-chart h2 { color:#fff; } .c-chart .sub { color:#8b929c; }
   .chart-head { display:flex; align-items:baseline; gap:14px; flex-wrap:wrap; margin:8px 0 4px; }
   .chart-head .px { font-size:34px; font-weight:800; letter-spacing:-.02em; }
@@ -199,6 +204,20 @@ PAGE = """<!doctype html>
   .track2 { height:9px; background:var(--grid); border-radius:6px; overflow:hidden; }
   .fill2 { height:100%; border-radius:6px; transition:width .5s ease; }
   .srow.ns .nm,.srow.ns .v { color:var(--muted); font-weight:500; }
+  .srow.partial .v { color:var(--ink2); }
+  .pflag { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.06em;
+    color:var(--orange); background:var(--orange-bg); padding:1px 6px; border-radius:99px; margin-left:6px; }
+  .owngrid { display:grid; grid-template-columns:1fr 1fr; gap:24px; margin-top:14px; }
+  @media (max-width:720px) { .owngrid { grid-template-columns:1fr; } }
+  .ownh { font-size:12.5px; font-weight:700; color:var(--ink2); margin-bottom:8px; }
+  .orow { display:grid; grid-template-columns:1fr auto; gap:10px; padding:8px 0;
+    border-top:1px solid var(--grid); font-size:13px; font-variant-numeric:tabular-nums; }
+  .orow .who { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .otag { font-size:11px; font-weight:700; padding:1px 7px; border-radius:99px; margin-right:7px; }
+  .otag.buy { color:var(--green); background:var(--green-bg); }
+  .otag.sell { color:var(--red); background:var(--red-bg); }
+  .onet { margin-top:8px; font-size:13px; font-weight:700; }
+  .ownnote { color:var(--muted); font-size:12px; margin-top:12px; line-height:1.5; }
   .price-now { display:flex; align-items:baseline; gap:10px; margin:14px 0 4px; }
   .price-now .n { font-size:30px; font-weight:800; }
   .price-now .u { font-size:12.5px; color:var(--muted); }
@@ -243,6 +262,7 @@ PAGE = """<!doctype html>
     <div class="card c-chart" id="chartCard"></div>
     <div class="card c-score" id="scoreCard"></div>
     <div class="card c-target" id="targetCard"></div>
+    <div class="card c-own" id="ownCard"></div>
   </div>
   <div class="foot" id="foot"><b>Nota:</b> Puntaje rápido con datos oficiales de la SEC (EDGAR).
   Sin evidencia no hay número: las categorías pendientes se muestran como N/S, nunca se inventan.
@@ -329,6 +349,13 @@ function scoreHtml(d) {
           style="width:0%;background:${CAT_COLORS[r.key]}"></div></div>
         <span class="v">${r.score10.toFixed(1)}/10</span></div>`;
     }
+    if (r.status === 'partial') {
+      return `<div class="srow partial"><span class="nm" title="${r.reason}">${r.label}
+          <em class="pflag">parcial</em></span>
+        <div class="track2"><div class="fill2" data-w="${r.score10 * 10}"
+          style="width:0%;background:${CAT_COLORS[r.key]};opacity:.45"></div></div>
+        <span class="v" title="${r.reason}">${r.score10.toFixed(1)}/10*</span></div>`;
+    }
     return `<div class="srow ns"><span class="nm" title="${r.reason}">${r.label}</span>
       <div class="track2"></div><span class="v">N/S</span></div>`;
   }).join('');
@@ -373,6 +400,46 @@ function targetHtml(d) {
       <span class="u">precio actual · EPS $${t.eps} · P/E ${t.pe_now}x</span></div>
     <div class="range"><div class="line"></div>${marks}</div>${rows}
     <div class="sub" style="margin-top:12px">${t.disclaimer}</div>`;
+}
+
+function ownHtml(d) {
+  const o = d.ownership;
+  if (!o) {
+    return `<h2>Insiders (Form 4) y 13F institucional</h2>
+      <div class="sub">Compras/ventas de insiders (>$1M) e inversionistas institucionales</div>
+      <p class="ownnote">No disponible sin una key de FMP. Pega <code>FMP_API_KEY</code>
+      en <code>API/.env</code> para activar esta sección (SEC Form 4 + 13F).</p>`;
+  }
+  const ins = o.insiders, inst = o.institutions;
+  const fmtM = v => '$' + (v / 1e6).toLocaleString('en-US', {maximumFractionDigits: 1}) + 'M';
+  let insHtml = '<div class="ownh">Insiders materiales (>$1M)</div>';
+  if (ins && (ins.material_buys.length || ins.material_sells.length)) {
+    const rows = [...ins.material_buys, ...ins.material_sells].map(m =>
+      `<div class="orow"><span class="who"><span class="otag ${m.direction}">${m.direction === 'buy' ? 'COMPRA' : 'VENTA'}</span>${m.insider}</span>
+        <span>${fmtM(m.value)} · ${m.n} tx</span></div>`).join('');
+    const net = ins.net_material_usd;
+    insHtml += rows + `<div class="onet" style="color:${net >= 0 ? 'var(--green)' : 'var(--red)'}">
+      Neto material: ${net >= 0 ? '+' : '−'}${fmtM(Math.abs(net))} (${net >= 0 ? 'compra' : 'venta'} neta, ${ins.window_months}m)</div>`;
+  } else {
+    insHtml += `<p class="ownnote">Sin transacciones de insiders sobre $1M en la ventana.</p>`;
+  }
+  let instHtml = '<div class="ownh">Top holders institucionales (13F)</div>';
+  if (inst) {
+    instHtml += inst.top_holders.slice(0, 6).map(h => {
+      const val = h.value_usd ? ' · ~$' + (h.value_usd / 1e9).toFixed(1) + 'B' : '';
+      const ch = h.change === null ? '' :
+        ` <span style="color:${h.change >= 0 ? 'var(--green)' : 'var(--red)'}">${h.change >= 0 ? '▲' : '▼'}${(Math.abs(h.change) / 1e6).toFixed(1)}M</span>`;
+      return `<div class="orow"><span class="who">${h.holder}</span>
+        <span>${(h.shares / 1e6).toLocaleString('en-US', {maximumFractionDigits: 0})}M sh${val}${ch}</span></div>`;
+    }).join('') + `<div class="onet" style="font-weight:600;color:var(--ink2)">Al ${inst.as_of} · ${inst.n_holders_reported} reportados</div>`;
+  } else {
+    instHtml += `<p class="ownnote">Sin datos de 13F.</p>`;
+  }
+  return `<h2>Insiders (Form 4) y 13F institucional</h2>
+    <div class="sub">Solo cuentan como materiales las compras/ventas de insiders que superan $1M en total</div>
+    <div class="owngrid"><div>${insHtml}</div><div>${instHtml}</div></div>
+    <p class="ownnote">El historial del management en otras empresas exitosas requiere investigación
+    cualitativa (lo evalúa el agente orquestador, no se infiere de los filings).</p>`;
 }
 
 // --- Gráfica SVG propia (cero dependencias externas) ---------------------
@@ -523,6 +590,7 @@ async function run(t) {
     document.getElementById('wordsCard').innerHTML = wordsHtml(d);
     document.getElementById('scoreCard').innerHTML = scoreHtml(d);
     document.getElementById('targetCard').innerHTML = targetHtml(d);
+    document.getElementById('ownCard').innerHTML = ownHtml(d);
     grid.style.display = 'grid';
     renderChart(d);
     status.textContent = '';
