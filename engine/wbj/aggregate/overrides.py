@@ -66,6 +66,7 @@ __all__ = [
     "OVERRIDE_4_RISK_FLOOR",
     "OVERRIDE_5_PREMIUM_BREAKDOWN",
     "OVERRIDE_6_COVERAGE_GATE_INELIGIBLE",
+    "OVERRIDE_7_MISSING_SHARE_COUNT",
     "OVERRIDE_7_DATA_CONFLICT_SUPPRESS_PER_SHARE",
     "apply_overrides",
     "validate_handoff",
@@ -91,6 +92,14 @@ OVERRIDE_3_SOLVENCY_WARNING = "OVERRIDE_3_SOLVENCY_WARNING"
 OVERRIDE_4_RISK_FLOOR = "OVERRIDE_4_RISK_FLOOR"
 OVERRIDE_5_PREMIUM_BREAKDOWN = "OVERRIDE_5_PREMIUM_BREAKDOWN"
 OVERRIDE_6_COVERAGE_GATE_INELIGIBLE = "OVERRIDE_6_COVERAGE_GATE_INELIGIBLE"
+# Override 7 has two distinct triggers with two distinct VALIDATION_TESTS.md
+# outcomes, deliberately NOT collapsed into one:
+#   - MAIN-009 "Missing share count" -> "Suppress per-share valuation": a
+#     MISSING diluted_shares fact. Suppression only.
+#   - MAIN-010 "Same metric has material source conflict" -> "Mark
+#     conflicted and rerun affected agents": a CONFLICTED material fact.
+#     Suppression PLUS the rerun-affected-agents outcome.
+OVERRIDE_7_MISSING_SHARE_COUNT = "OVERRIDE_7_MISSING_SHARE_COUNT"
 OVERRIDE_7_DATA_CONFLICT_SUPPRESS_PER_SHARE = "OVERRIDE_7_DATA_CONFLICT_SUPPRESS_PER_SHARE"
 
 
@@ -141,23 +150,51 @@ class AggregateInputs:
 # ============================================================================
 
 
+# Metric-row warning tokens that MUST be reflected as a mandatory flag on
+# the specialist that OWNS that override. Keyed by the owning output type so
+# the check never false-positives on a specialist that merely carries the
+# warning at the per-metric level without owning the override (e.g.
+# `financial.py`'s FIN-BS-020 attaches SOLVENCY_WARNING to its interest-
+# coverage row, but the solvency override is the RISK specialist's -- risk
+# is the one HANDOFF_CONTRACT.md's "a required override flag is omitted"
+# rule holds accountable for hoisting it to `mandatory_flags`).
+_REQUIRED_FLAG_OWNER: dict[type, dict[str, str]] = {
+    RiskOutput: {"SOLVENCY_WARNING": "SOLVENCY_WARNING"},
+}
+
+
 def validate_handoff(output: SpecialistOutput) -> list[str]:
     """Return the list of handoff-rejection reasons for `output` (empty if
-    the packet is acceptable), per `HANDOFF_CONTRACT.md`'s five rules:
+    the packet is acceptable), per `HANDOFF_CONTRACT.md`'s seven rules:
 
     1. category points do not reproduce from dimension scores;
-    2. a score lacks a formula ID;
+    2. a score lacks a formula ID (or scoring rule);
     3. the knowledge timestamp is absent;
     4. confidence and/or coverage are absent;
-    5. (technical only) price levels lack touch dates, zone bounds, or ATR
-       distance.
+    5. a required override flag is omitted;
+    6. (technical only) price levels lack touch dates, zone bounds, or ATR
+       distance;
+    7. (valuation only) valuation lacks scenario assumptions and diluted
+       share count.
 
     `Zone.lower/center/upper` are non-optional pydantic fields, so "zone
-    bounds" are always structurally present once a `Zone` exists; this
-    function's zone check instead enforces the touch-date and ATR-distance
-    parts of rule 5 for every zone whose status implies it has qualifying
-    touches (`confirmed`/`strong`/`role_reversed` -- a bare `candidate`
-    zone is not yet claiming to be touch-confirmed).
+    bounds" are always structurally present once a `Zone` exists; rule 6's
+    zone check instead enforces the touch-date and ATR-distance parts for
+    every zone whose status implies it has qualifying touches
+    (`confirmed`/`strong`/`role_reversed` -- a bare `candidate` zone is not
+    yet claiming to be touch-confirmed).
+
+    Rule 5 ("a required override flag is omitted") is enforced against the
+    specialist that OWNS each override (see `_REQUIRED_FLAG_OWNER`): a risk
+    output whose metrics raise SOLVENCY_WARNING must carry the
+    SOLVENCY_WARNING mandatory flag. Rule 7's "diluted share count" is
+    read via the scenarios' per-share values -- a per-share value cannot be
+    produced without a diluted share count, so "no scenario yields a
+    per-share value" is this module's proxy for "diluted share count
+    absent" (documented, not derived from a HANDOFF_CONTRACT.md formula).
+    An `ADAPTER_UNSUPPORTED` valuation output is a separately-signaled
+    known-bad packet, not a handoff-shape violation, so rule 7 is skipped
+    for it.
     """
     reasons: list[str] = []
 
@@ -187,9 +224,49 @@ def validate_handoff(output: SpecialistOutput) -> list[str]:
     if output.coverage is None:
         reasons.append("MISSING_COVERAGE")
 
+    reasons.extend(_validate_required_flags(output))
+
     if isinstance(output, TechnicalOutput):
         reasons.extend(_validate_levels(output))
 
+    if isinstance(output, ValuationOutput):
+        reasons.extend(_validate_valuation(output))
+
+    return reasons
+
+
+def _validate_required_flags(output: SpecialistOutput) -> list[str]:
+    """Rule 5: a required override flag is omitted (per
+    `_REQUIRED_FLAG_OWNER`, scoped to the override's owning specialist)."""
+    reasons: list[str] = []
+    required_map = _REQUIRED_FLAG_OWNER.get(type(output))
+    if not required_map:
+        return reasons
+    known = set(output.mandatory_flags) | set(getattr(output, "mandatory_warnings", []) or [])
+    for warning_token, required_flag in required_map.items():
+        raised = any(warning_token in m.warnings for m in output.metrics)
+        if raised and required_flag not in known:
+            reasons.append(
+                f"REQUIRED_OVERRIDE_FLAG_OMITTED: a metric raised {warning_token!r} "
+                f"but the output omits the required {required_flag!r} mandatory flag"
+            )
+    return reasons
+
+
+def _validate_valuation(output: "ValuationOutput") -> list[str]:
+    """Rule 7: valuation lacks scenario assumptions and diluted share
+    count. Skipped for an `ADAPTER_UNSUPPORTED` output (separately flagged
+    known-bad, not a handoff-shape violation)."""
+    reasons: list[str] = []
+    if "ADAPTER_UNSUPPORTED" in output.mandatory_flags:
+        return reasons
+    if not any(s.assumptions for s in output.scenarios):
+        reasons.append("VALUATION_MISSING_SCENARIO_ASSUMPTIONS: no scenario carries assumptions")
+    if not any(s.per_share_value is not None for s in output.scenarios):
+        reasons.append(
+            "VALUATION_MISSING_DILUTED_SHARE_COUNT: no scenario yields a per-share value "
+            "(diluted share count unavailable)"
+        )
     return reasons
 
 
@@ -323,7 +400,30 @@ def apply_overrides(inputs: AggregateInputs) -> list[Override]:
             )
         )
 
-    # --- Override 7: unresolved material facts-table conflict -> suppress per-share valuation ---
+    # --- Override 7a: MISSING diluted share count -> suppress per-share (MAIN-009) ---
+    # VALIDATION_TESTS.md MAIN-009 "Missing share count" -> "Suppress
+    # per-share valuation". A per-share number cannot be published without a
+    # diluted share count; this is suppression ONLY (distinct from MAIN-010's
+    # conflict outcome below), so the two are modeled as separate overrides.
+    shares_fact = inputs.facts_table.get("diluted_shares")
+    if shares_fact is not None and shares_fact.state == NullState.MISSING:
+        out.append(
+            Override(
+                id=OVERRIDE_7_MISSING_SHARE_COUNT,
+                effect="SUPPRESS_PER_SHARE",
+                reason=(
+                    "Missing diluted share count in facts_table (MAIN-009): per-share "
+                    "valuation publication is suppressed."
+                ),
+            )
+        )
+
+    # --- Override 7b: unresolved material facts-table conflict -> suppress
+    # per-share AND rerun affected agents (MAIN-010) ---
+    # VALIDATION_TESTS.md MAIN-010 "Same metric has material source conflict"
+    # -> "Mark conflicted and rerun affected agents" -- a strictly stronger
+    # outcome than MAIN-009's plain suppression, captured in the distinct
+    # effect tag `SUPPRESS_PER_SHARE_RERUN_AFFECTED_AGENTS`.
     conflicted_fields = [
         field_name
         for field_name in _MATERIAL_FACTS_FIELDS
@@ -339,10 +439,11 @@ def apply_overrides(inputs: AggregateInputs) -> list[Override]:
         out.append(
             Override(
                 id=OVERRIDE_7_DATA_CONFLICT_SUPPRESS_PER_SHARE,
-                effect="SUPPRESS_PER_SHARE",
+                effect="SUPPRESS_PER_SHARE_RERUN_AFFECTED_AGENTS",
                 reason=(
-                    f"Unresolved material data conflict in: {', '.join(conflicted_fields)}. "
-                    "Per-share valuation publication is suppressed until resolved."
+                    f"Unresolved material data conflict in: {', '.join(conflicted_fields)} "
+                    "(MAIN-010). Per-share valuation is suppressed and the affected agents "
+                    "must be rerun before publication."
                 ),
             )
         )

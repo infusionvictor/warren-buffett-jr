@@ -14,6 +14,7 @@ from wbj.aggregate.gates import (
     GATE_QUALITY,
     GATE_SPECULATIVE,
     GATE_VALUE,
+    GATE_WEAK,
     CategoryConfidences,
     CategoryPoints,
     apply_gates,
@@ -135,21 +136,21 @@ def test_MAIN_004_premium_breakdown_override():
 
 
 def test_MAIN_005_no_quality_label_when_roic_below_wacc():
-    # A combination that would otherwise clear every Quality Opportunity
-    # threshold (raw>=80, business>=16, financial>=11, risk>=10,
-    # valuation>=5, technical>=12) but deliberately misses Momentum's
-    # market>=16/20 requirement, so Quality is the gate under test (not
-    # shadowed by Momentum's higher label priority).
-    cats = CategoryPoints(business=20, financial=15, market=15, technical=17, risk=12, valuation=8)
+    # VALIDATION_TESTS.md MAIN-005 fixes total=92. This combination sums to
+    # exactly 92 and clears every Quality Opportunity threshold (raw>=80,
+    # business>=16, financial>=11, risk>=10, valuation>=5, technical>=12),
+    # while deliberately failing Momentum (market<16) and Value
+    # (valuation<8) so the gate genuinely under test is Quality.
+    cats = CategoryPoints(business=20, financial=15, market=15, technical=20, risk=15, valuation=7)
     raw = raw_total(cats)
-    assert raw == 87.0
+    assert raw == 92.0
 
     # Without the override: Quality Opportunity passes.
     clean_overrides = _overrides_for()
     clean_result = apply_gates(raw, cats, _FULL_CONF, clean_overrides)
     assert clean_result.label == GATE_QUALITY
 
-    # With ROIC<WACC: Quality Opportunity must not pass.
+    # With ROIC<WACC: Quality Opportunity must not pass, and no Elite label.
     fin = make_financial(points=15.0, mandatory_flags=["OVERRIDE_2_ROIC_BELOW_WACC"])
     override_overrides = _overrides_for(financial=fin)
     result = apply_gates(raw, cats, _FULL_CONF, override_overrides)
@@ -290,3 +291,47 @@ def test_speculative_when_total_confidence_below_60():
     overrides = _overrides_for()
     result = apply_gates(raw, cats, low_conf, overrides)
     assert result.label == GATE_SPECULATIVE
+
+
+def test_speculative_when_pre_profit_low_confidence_terminal_value():
+    """SCORING_AND_GATES.md Speculative bullet: 'pre-profit valuation
+    depends on a low-confidence terminal value'. A high-raw name with the
+    valuation HIGH_TERMINAL_SENSITIVITY flag AND pre-profit is forced
+    Speculative despite an otherwise-strong score."""
+    # A raw high enough to otherwise clear Quality (raw=90).
+    cats = CategoryPoints(business=20, financial=15, market=15, technical=20, risk=15, valuation=5)
+    raw = raw_total(cats)
+    assert raw == 90.0
+    overrides = _overrides_for()
+    result = apply_gates(
+        raw, cats, _FULL_CONF, overrides,
+        pre_profit=True, valuation_mandatory_flags=["HIGH_TERMINAL_SENSITIVITY"],
+    )
+    assert result.label == GATE_SPECULATIVE
+    assert any("low-confidence terminal value" in w for w in result.warnings)
+
+
+def test_not_speculative_when_terminal_flag_present_but_not_pre_profit():
+    """The bullet is scoped to 'pre-profit valuation' -- a profitable
+    company with HIGH_TERMINAL_SENSITIVITY is NOT forced Speculative on
+    this bullet alone."""
+    cats = CategoryPoints(business=20, financial=15, market=15, technical=20, risk=15, valuation=5)
+    raw = raw_total(cats)
+    overrides = _overrides_for()
+    result = apply_gates(
+        raw, cats, _FULL_CONF, overrides,
+        pre_profit=False, valuation_mandatory_flags=["HIGH_TERMINAL_SENSITIVITY"],
+    )
+    assert result.label != GATE_SPECULATIVE
+
+
+def test_weak_wait_fallback_label_for_raw_in_50_to_60_no_gate():
+    """The documented [50,60) gap: raw in this band with no override and no
+    Speculative trigger returns the GATE_WEAK constant."""
+    cats = CategoryPoints(business=10, financial=8, market=10, technical=10, risk=12, valuation=5)
+    raw = raw_total(cats)
+    assert raw == 55.0
+    overrides = _overrides_for(risk=make_risk(points=12.0))
+    result = apply_gates(raw, cats, _FULL_CONF, overrides)
+    assert result.label == GATE_WEAK
+    assert result.passed_gates == []

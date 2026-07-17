@@ -27,9 +27,10 @@ Watch), several non-raw-total Speculative conditions, and raw < 50
 Speculative trigger is not assigned a profile by any rule in that file
 (its own descriptive-band table separately labels 50-59.99 "Weak", but
 "a raw band is not the final profile"). This module closes that gap by
-falling back to `"Weak / Wait (no gate passed)"` for that range, flagged
-here and in the Task 21 commit message as an interpretation beyond the
-literal spec rather than a value taken directly from it.
+falling back to the `GATE_WEAK` label (`"Weak / Wait (no gate passed)"`)
+for that range, flagged here and in the Task 21 commit message as an
+interpretation beyond the literal spec rather than a value taken directly
+from it.
 """
 
 from __future__ import annotations
@@ -58,6 +59,7 @@ __all__ = [
     "GATE_CONDITIONAL",
     "GATE_SPECULATIVE",
     "GATE_AVOID",
+    "GATE_WEAK",
     "raw_total",
     "descriptive_band",
     "total_confidence",
@@ -72,6 +74,10 @@ GATE_VALUE = "Value Opportunity"
 GATE_CONDITIONAL = "Conditional / Watch"
 GATE_SPECULATIVE = "Speculative"
 GATE_AVOID = "Avoid / Wait"
+# Fallback label for the documented [50, 60) gap (see module docstring):
+# raw in [50,60) with no override and no Speculative trigger is assigned no
+# profile by any SCORING_AND_GATES.md rule.
+GATE_WEAK = "Weak / Wait (no gate passed)"
 
 _TOTAL_CONFIDENCE_SPECULATIVE_FLOOR = 60.0
 
@@ -231,18 +237,32 @@ def apply_gates(
     overrides: list[Override],
     *,
     runway_unfunded: bool = False,
+    pre_profit: bool = False,
+    valuation_mandatory_flags: list[str] | None = None,
 ) -> ProfileResult:
     """Apply SCORING_AND_GATES.md's profile gates and mandatory overrides
     to a frozen raw score, producing the single final `ProfileResult`.
 
-    `runway_unfunded` (Speculative's "financing runway is less than 12
-    months without committed funding" bullet) is not derivable from
-    `cats`/`confidences`/`overrides` alone -- no override or category-point
-    carries a runway signal -- so it is an explicit keyword-only flag a
-    caller (Task 24's orchestrator, once it has the risk specialist's
-    runway metric in hand) may set. Defaults `False` (no runway concern),
-    matching the behavior of every existing MAIN-* / gate test, none of
-    which exercises this bullet.
+    Two Speculative bullets are not derivable from
+    `cats`/`confidences`/`overrides` alone, so they are explicit keyword-only
+    inputs (matching the `runway_unfunded` precedent):
+
+    - `runway_unfunded` -- Speculative's "financing runway is less than 12
+      months without committed funding" bullet. No override or
+      category-point carries a runway signal.
+    - `pre_profit` + `valuation_mandatory_flags` -- Speculative's "pre-profit
+      valuation depends on a low-confidence terminal value" bullet. The
+      low-confidence-terminal-value signal already exists in the codebase as
+      `valuation.py`'s `HIGH_TERMINAL_SENSITIVITY` mandatory flag (raised
+      when `TERMINAL_VALUE_SHARE_ABOVE_75PCT` fires); this gate reads it
+      from `valuation_mandatory_flags`. It only forces Speculative when the
+      company is also `pre_profit` (net loss), because SCORING_AND_GATES.md
+      scopes the bullet to "pre-profit valuation". A caller (Task 24's
+      orchestrator) sets `pre_profit` from the financial specialist's net-
+      loss signal and passes `valuation.mandatory_flags` straight through.
+
+    All three default to their no-op value, matching every existing MAIN-* /
+    gate test, none of which exercises these bullets.
     """
     override_ids = {o.id for o in overrides}
     conf_total = total_confidence(confidences)
@@ -277,8 +297,16 @@ def apply_gates(
         )
 
     # --- Speculative: risk<=4/15, total confidence<60, a critical category
-    # incomplete (coverage override), capital-dependence override, or
-    # unfunded runway ---
+    # incomplete (coverage override), capital-dependence override, a
+    # pre-profit low-confidence terminal value, or unfunded runway.
+    #
+    # OVERRIDE_1_CAPITAL_DEPENDENCE routes here (Speculative), never to
+    # Avoid: SCORING_AND_GATES.md caps a capital-dependent name at
+    # "Avoid/Speculative", and Avoid is reached only via the independent
+    # raw_total<50 rule (evaluated in the block above) -- so a capital-
+    # dependent name with raw>=50 lands in Speculative, and one with raw<50
+    # in Avoid, exactly reproducing the "Avoid/Speculative" cap without
+    # override 1 itself ever forcing Avoid. ---
     critical_incomplete = OVERRIDE_6_COVERAGE_GATE_INELIGIBLE in override_ids
     forced_speculative_reasons: list[str] = []
     if OVERRIDE_1_CAPITAL_DEPENDENCE in override_ids:
@@ -289,6 +317,16 @@ def apply_gates(
         forced_speculative_reasons.append(f"total_confidence<60 (got {conf_total!r})")
     if critical_incomplete:
         forced_speculative_reasons.append(f"{OVERRIDE_6_COVERAGE_GATE_INELIGIBLE}: a critical category is incomplete")
+    low_confidence_terminal_value = (
+        pre_profit
+        and valuation_mandatory_flags is not None
+        and "HIGH_TERMINAL_SENSITIVITY" in valuation_mandatory_flags
+    )
+    if low_confidence_terminal_value:
+        forced_speculative_reasons.append(
+            "pre-profit valuation depends on a low-confidence terminal value "
+            "(valuation HIGH_TERMINAL_SENSITIVITY)"
+        )
     if runway_unfunded:
         forced_speculative_reasons.append("financing runway<12 months without committed funding")
 
@@ -349,7 +387,7 @@ def apply_gates(
 
     # 50 <= raw_total < 60: see module docstring's documented gap.
     return ProfileResult(
-        label="Weak / Wait (no gate passed)",
+        label=GATE_WEAK,
         raw_score=raw_total,
         total_confidence=conf_total,
         descriptive_band=band,
