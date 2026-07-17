@@ -75,8 +75,8 @@ killers" is likewise a judgment request.
 Same discipline as `business.py`: `SCORING.md`'s dimension-level "Gate /
 cap" column (TAM confidence <60 caps TAM at 6; narrative-only catalysts
 cap Catalysts at 3) is baked directly into the dimension's own point math
-via `_apply_dimension_cap` -- part of the deterministic math
-`Category(dimensions)` reproduces from. `DECISION_RULES.md`'s
+via the shared `common.apply_dimension_cap` -- part of the deterministic
+math `Category(dimensions)` reproduces from. `DECISION_RULES.md`'s
 forecast-consistency gate ("forecast growth > growth capacity by >5pts
 requires an external-capital explanation") is instead recorded as an
 `EXTERNAL_CAPITAL_REQUIRED` mandatory flag -- informational, not a point
@@ -102,6 +102,7 @@ from wbj.engines import indicators as ind
 from wbj.schemas.packet import Packet
 from wbj.specialists.common import (
     CategoryStats,
+    apply_dimension_cap,
     JudgmentRequest,
     MetricRow,
     SecurityRef,
@@ -482,34 +483,9 @@ def tam_confidence_caps_dimension(confidence_component: float) -> bool:
 
 
 # ============================================================================
-# Dimension cap helper (SCORING.md "Gate / cap" column)
+# Scoring helper. (SCORING.md's "Gate / cap" column is applied via the shared
+# wbj.specialists.common.apply_dimension_cap -- imported above, not local.)
 # ============================================================================
-
-
-def _apply_dimension_cap(
-    metric_scores: list[tuple[float, Value]], *, cap: float
-) -> list[tuple[float, Value]]:
-    """Scale every valid `Value` in `metric_scores` by a common factor so
-    the resulting weighted mean is `min(original_weighted_mean, cap)`.
-    Identical mechanism to `business.py`'s `_apply_dimension_cap` (see that
-    module's docstring); duplicated locally rather than cross-imported to
-    keep each specialist self-contained (both are pure, stateless
-    functions with no shared data dependency)."""
-    total = sum(w for w, _ in metric_scores)
-    valid = sum(w for w, v in metric_scores if v.is_valid)
-    if valid <= 0 or total <= 0:
-        return metric_scores
-    weighted_mean = sum(w * v.value for w, v in metric_scores if v.is_valid) / valid
-    if weighted_mean <= cap:
-        return metric_scores
-    factor = cap / weighted_mean
-    out: list[tuple[float, Value]] = []
-    for w, v in metric_scores:
-        if v.is_valid:
-            out.append((w, Value.of(v.value * factor, unit=v.unit, evidence_class=v.evidence_class, warnings=list(v.warnings))))
-        else:
-            out.append((w, v))
-    return out
 
 
 def _score_from_anchor(v: Value, anchors: list[tuple[float, float]]) -> float | None:
@@ -925,7 +901,7 @@ def run(packet: Packet, overlay: dict[str, Any] | None = None) -> MarketOutput:
             )
         )
     elif tam_confidence_caps_dimension(tam_confidence):
-        tam_scores = _apply_dimension_cap(tam_scores, cap=6.0)
+        tam_scores = apply_dimension_cap(tam_scores, cap=6.0)
     tam_dim = Dimension(name=DIM_TAM, max_points=DIMENSION_MAX_POINTS[DIM_TAM], metric_scores=tam_scores)
 
     # ---- Revisions dimension (4 pts) ----
@@ -942,7 +918,7 @@ def run(packet: Packet, overlay: dict[str, Any] | None = None) -> MarketOutput:
         catalyst_scores.append((0.25, Value.of(s, unit="score") if s is not None else Value.null(NullState.NOT_SCORABLE, unit="score")))
     narrative_only = ctx.get("has_catalysts") and not ctx.get("any_catalyst_quantified")
     if narrative_only:
-        catalyst_scores = _apply_dimension_cap(catalyst_scores, cap=3.0)
+        catalyst_scores = apply_dimension_cap(catalyst_scores, cap=3.0)
     catalysts_dim = Dimension(name=DIM_CATALYSTS, max_points=DIMENSION_MAX_POINTS[DIM_CATALYSTS], metric_scores=catalyst_scores)
 
     # ---- Runway & share dimension (4 pts) ----

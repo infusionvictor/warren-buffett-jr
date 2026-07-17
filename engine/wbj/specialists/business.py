@@ -67,8 +67,8 @@ are all judgment requests, exactly like `financial.py`'s FIN-GR-004/005.
 capped at 6 without positive ROIC-WACC spread") -- unlike `financial.py`'s
 `capped_verdict` (which caps only the *label*, per
 `SpecialistOutput.verdict`'s docstring), these are baked directly into the
-computed dimension score itself via `_apply_dimension_cap`: they are part
-of the same deterministic point math `Category(dimensions)` reproduces
+computed dimension score itself via `common.apply_dimension_cap`: they are
+part of the same deterministic point math `Category(dimensions)` reproduces
 from, not a post-hoc override on the outward-facing verdict. The
 *business-verdict* table's own "Additional condition" for the Excellent
 band (moat gate, ROIC>=20%, FCF conversion>=0.9x) and the
@@ -92,6 +92,7 @@ from wbj.engines import valuation_engine as ve
 from wbj.schemas.packet import Packet
 from wbj.specialists.common import (
     CategoryStats,
+    apply_dimension_cap,
     JudgmentRequest,
     MetricRow,
     SecurityRef,
@@ -515,39 +516,6 @@ def capped_verdict(score10: float, *, value_destruction: bool, excellent_gate_pa
     elif not excellent_gate_passes:
         effective = min(effective, 7.99)
     return verdict(effective)
-
-
-# ============================================================================
-# Dimension cap helper (SCORING.md "Gate / cap" column)
-# ============================================================================
-
-
-def _apply_dimension_cap(
-    metric_scores: list[tuple[float, Value]], *, cap: float
-) -> list[tuple[float, Value]]:
-    """Scale every valid `Value` in `metric_scores` by a common factor so
-    the resulting weighted mean is `min(original_weighted_mean, cap)` --
-    the mechanism `run()` uses to apply `SCORING.md`'s dimension-level caps
-    (e.g. "moat capped at 6 without positive spread") directly to the
-    numbers `Category(dimensions)` reproduces from, rather than as a
-    post-hoc override on the label (see module docstring). A no-op when the
-    dimension is not scorable, empty, or already at/below `cap`.
-    """
-    total = sum(w for w, _ in metric_scores)
-    valid = sum(w for w, v in metric_scores if v.is_valid)
-    if valid <= 0 or total <= 0:
-        return metric_scores
-    weighted_mean = sum(w * v.value for w, v in metric_scores if v.is_valid) / valid
-    if weighted_mean <= cap:
-        return metric_scores
-    factor = cap / weighted_mean
-    out: list[tuple[float, Value]] = []
-    for w, v in metric_scores:
-        if v.is_valid:
-            out.append((w, Value.of(v.value * factor, unit=v.unit, evidence_class=v.evidence_class, warnings=list(v.warnings))))
-        else:
-            out.append((w, v))
-    return out
 
 
 # ============================================================================
@@ -1037,7 +1005,7 @@ def run(packet: Packet, overlay: dict[str, Any] | None = None) -> BusinessOutput
     ]
     positive_spread = ctx["spread_latest"] is not None and ctx["spread_latest"] > 0
     if not positive_spread:
-        moat_scores = _apply_dimension_cap(moat_scores, cap=6.0)
+        moat_scores = apply_dimension_cap(moat_scores, cap=6.0)
     moat_dim = Dimension(name=DIM_MOAT, max_points=DIMENSION_MAX_POINTS[DIM_MOAT], metric_scores=moat_scores)
 
     judgment_requests.append(
@@ -1081,7 +1049,7 @@ def run(packet: Packet, overlay: dict[str, Any] | None = None) -> BusinessOutput
         (0.5, Value.of(revenue_cagr_score, unit="score") if revenue_cagr_score is not None else Value.null(NullState.NOT_SCORABLE, unit="score")),
         (0.5, peer_v if peer_v is not None and peer_v.is_valid else Value.null(NullState.NOT_SCORABLE, unit="score")),
     ]
-    competitive_scores = _apply_dimension_cap(competitive_scores, cap=8.0)
+    competitive_scores = apply_dimension_cap(competitive_scores, cap=8.0)
     competitive_dim = Dimension(name=DIM_COMPETITIVE, max_points=DIMENSION_MAX_POINTS[DIM_COMPETITIVE], metric_scores=competitive_scores)
 
     # ---- MANAGEMENT (4 pts): incremental ROIC vs WACC, dilution, capital return, guidance ----
@@ -1108,7 +1076,7 @@ def run(packet: Packet, overlay: dict[str, Any] | None = None) -> BusinessOutput
         (1 / 3, Value.of(by_id["BUS-RANGE-010"].score10, unit="score") if by_id["BUS-RANGE-010"].score10 is not None else Value.null(NullState.NOT_SCORABLE, unit="score")),
     ]
     if concentration_flag:
-        durability_scores = _apply_dimension_cap(durability_scores, cap=6.0)
+        durability_scores = apply_dimension_cap(durability_scores, cap=6.0)
     durability_dim = Dimension(name=DIM_DURABILITY, max_points=DIMENSION_MAX_POINTS[DIM_DURABILITY], metric_scores=durability_scores)
 
     # ---- CUSTOMER ECONOMICS (3 pts): NRR/GRR, churn, LTV/CAC + payback ----

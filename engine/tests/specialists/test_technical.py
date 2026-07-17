@@ -333,18 +333,9 @@ def test_base_depth_computes_from_trailing_window():
 
 
 # ============================================================================
-# Dimension caps
+# Dimension caps (the apply_dimension_cap helper is tested in test_common.py;
+# the tests below exercise technical.py's *use* of it -- trend/volume caps).
 # ============================================================================
-
-
-def test_apply_dimension_cap_scales_to_hit_cap_exactly():
-    from wbj.core.nullstates import Value
-
-    scores = [(0.5, Value.of(10.0, unit="score")), (0.5, Value.of(8.0, unit="score"))]
-    capped = tech._apply_dimension_cap(scores, cap=6.0)
-    weighted = sum(w * v.value for w, v in capped if v.is_valid)
-    total_w = sum(w for w, v in capped if v.is_valid)
-    assert weighted / total_w == pytest.approx(6.0)
 
 
 def test_run_trend_capped_at_6_without_200_sessions():

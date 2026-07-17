@@ -234,18 +234,9 @@ def test_scenario_weighted_outcome_requires_probabilities_sum_to_one():
 
 
 # ============================================================================
-# Dimension caps
+# Dimension caps (the apply_dimension_cap helper is tested in test_common.py;
+# the tests below exercise market.py's *use* of it -- TAM/catalyst caps).
 # ============================================================================
-
-
-def test_apply_dimension_cap_scales_to_hit_cap_exactly():
-    from wbj.core.nullstates import Value
-
-    scores = [(0.5, Value.of(10.0, unit="score")), (0.5, Value.of(8.0, unit="score"))]
-    capped = mkt._apply_dimension_cap(scores, cap=6.0)
-    weighted = sum(w * v.value for w, v in capped if v.is_valid)
-    total_w = sum(w for w, v in capped if v.is_valid)
-    assert weighted / total_w == pytest.approx(6.0)
 
 
 def test_run_tam_dimension_capped_at_6_with_low_source_tier(nvda_packet):

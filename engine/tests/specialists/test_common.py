@@ -17,9 +17,50 @@ from wbj.specialists.common import (
     SecurityRef,
     SpecialistOutput,
     ValidationTestsSummary,
+    apply_dimension_cap,
     rescore,
     status_from_coverage,
 )
+
+
+# ============================================================================
+# apply_dimension_cap: the single shared SCORING.md "Gate / cap" mechanism
+# (business/market/technical/valuation all import this one definition).
+# ============================================================================
+
+
+def test_apply_dimension_cap_scales_valid_scores_to_hit_cap_exactly():
+    scores = [(0.5, Value.of(10.0, unit="score")), (0.5, Value.of(8.0, unit="score"))]
+    capped = apply_dimension_cap(scores, cap=6.0)
+    weighted = sum(w * v.value for w, v in capped if v.is_valid)
+    total_w = sum(w for w, v in capped if v.is_valid)
+    assert weighted / total_w == pytest.approx(6.0)
+
+
+def test_apply_dimension_cap_noop_when_already_below_cap():
+    scores = [(1.0, Value.of(3.0, unit="score"))]
+    capped = apply_dimension_cap(scores, cap=6.0)
+    assert capped[0][1].value == pytest.approx(3.0)
+
+
+def test_apply_dimension_cap_noop_when_nothing_valid():
+    """Every member NOT_SCORABLE -> no valid weight to scale, returned
+    unchanged (the honest 'missing evidence is never neutral' path -- the
+    cap never fabricates a score)."""
+    scores = [(0.5, Value.null(NullState.NOT_SCORABLE, unit="score")), (0.5, Value.null(NullState.NOT_SCORABLE, unit="score"))]
+    capped = apply_dimension_cap(scores, cap=5.0)
+    assert capped == scores
+
+
+def test_apply_dimension_cap_preserves_null_members_and_warnings():
+    scores = [
+        (0.5, Value.of(10.0, unit="score", warnings=["W"])),
+        (0.5, Value.null(NullState.NOT_SCORABLE, unit="score")),
+    ]
+    capped = apply_dimension_cap(scores, cap=4.0)
+    assert capped[0][1].value == pytest.approx(4.0)   # scaled to the cap (only valid member)
+    assert "W" in capped[0][1].warnings                # warnings carried through
+    assert capped[1][1].is_null                        # null member untouched
 
 
 def _security() -> SecurityRef:

@@ -224,6 +224,41 @@ class SpecialistOutput(BaseModel):
     validation_tests: ValidationTestsSummary = Field(default_factory=ValidationTestsSummary)
 
 
+def apply_dimension_cap(
+    metric_scores: list[tuple[float, Value]], *, cap: float
+) -> list[tuple[float, Value]]:
+    """Scale every valid `Value` in `metric_scores` by a common factor so
+    the resulting weighted mean is `min(original_weighted_mean, cap)`.
+
+    The single shared implementation of `SCORING.md`'s dimension-level
+    "Gate / cap" column (e.g. business's "moat capped at 6 without positive
+    spread", market's "narrative-only catalyst capped at 3", technical's
+    volume/SMA200 caps, valuation's low-confidence MOS cap). Applied
+    directly to the numbers `Category(dimensions)` reproduces from, so the
+    cap is part of the deterministic point math -- distinct from a
+    `capped_verdict`-style label-only override (see
+    `SpecialistOutput.verdict`). A no-op when the dimension is not scorable,
+    empty, or already at/below `cap`. Pure and stateless: every specialist
+    that has a numeric cap imports this one definition (risk_analysis has
+    none, so it does not).
+    """
+    total = sum(w for w, _ in metric_scores)
+    valid = sum(w for w, v in metric_scores if v.is_valid)
+    if valid <= 0 or total <= 0:
+        return metric_scores
+    weighted_mean = sum(w * v.value for w, v in metric_scores if v.is_valid) / valid
+    if weighted_mean <= cap:
+        return metric_scores
+    factor = cap / weighted_mean
+    out: list[tuple[float, Value]] = []
+    for w, v in metric_scores:
+        if v.is_valid:
+            out.append((w, Value.of(v.value * factor, unit=v.unit, evidence_class=v.evidence_class, warnings=list(v.warnings))))
+        else:
+            out.append((w, v))
+    return out
+
+
 def status_from_coverage(coverage: float) -> Status:
     """Map a `Category.coverage()` ratio to an envelope `status`.
 

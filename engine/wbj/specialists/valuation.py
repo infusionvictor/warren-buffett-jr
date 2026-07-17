@@ -96,6 +96,7 @@ from wbj.schemas.valuation import (
 )
 from wbj.specialists.common import (
     CategoryStats,
+    apply_dimension_cap,
     JudgmentRequest,
     MetricRow,
     SecurityRef,
@@ -152,27 +153,6 @@ def _score_from_anchor(v: Value, anchors: list[tuple[float, float]]) -> float | 
     if v.is_null:
         return None
     return anchor_score(v.value, anchors)
-
-
-def _apply_dimension_cap(metric_scores: list[tuple[float, Value]], *, cap: float) -> list[tuple[float, Value]]:
-    """Same mechanism as business.py/market.py/technical.py/risk.py's
-    `_apply_dimension_cap` -- proportional rescale of valid sub-scores so
-    the weighted mean hits `cap` exactly."""
-    total = sum(w for w, _ in metric_scores)
-    valid = sum(w for w, v in metric_scores if v.is_valid)
-    if valid <= 0 or total <= 0:
-        return metric_scores
-    weighted_mean = sum(w * v.value for w, v in metric_scores if v.is_valid) / valid
-    if weighted_mean <= cap:
-        return metric_scores
-    factor = cap / weighted_mean
-    out: list[tuple[float, Value]] = []
-    for w, v in metric_scores:
-        if v.is_valid:
-            out.append((w, Value.of(v.value * factor, unit=v.unit, evidence_class=v.evidence_class, warnings=list(v.warnings))))
-        else:
-            out.append((w, v))
-    return out
 
 
 def verdict(score10: float) -> str:
@@ -698,7 +678,7 @@ def run(packet: Packet, overlay: dict[str, Any] | None = None) -> ValuationOutpu
     ]
     low_confidence = dispersion is not None and base_per_share and dispersion / abs(base_per_share) > 0.30
     if low_confidence:
-        mos_scores = _apply_dimension_cap(mos_scores, cap=5.0)
+        mos_scores = apply_dimension_cap(mos_scores, cap=5.0)
     mos_dim = Dimension(name=DIM_MOS, max_points=DIMENSION_MAX_POINTS[DIM_MOS], metric_scores=mos_scores)
 
     dimensions = [multiples_dim, hist_peer_dim, cf_yield_dim, fair_value_dim, mos_dim]

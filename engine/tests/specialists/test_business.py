@@ -259,26 +259,10 @@ def test_reinvestment_rate_and_sustainable_growth():
 
 
 # ============================================================================
-# Dimension caps (SCORING.md "Gate / cap" column)
+# Dimension caps (SCORING.md "Gate / cap" column) -- the apply_dimension_cap
+# helper itself is now tested once in test_common.py; the tests below
+# exercise business.py's *use* of it (moat/durability caps).
 # ============================================================================
-
-
-def test_apply_dimension_cap_scales_valid_scores_to_hit_cap_exactly():
-    from wbj.core.nullstates import Value
-
-    scores = [(0.5, Value.of(10.0, unit="score")), (0.5, Value.of(8.0, unit="score"))]
-    capped = bus._apply_dimension_cap(scores, cap=6.0)
-    weighted = sum(w * v.value for w, v in capped if v.is_valid)
-    total_w = sum(w for w, v in capped if v.is_valid)
-    assert weighted / total_w == pytest.approx(6.0)
-
-
-def test_apply_dimension_cap_noop_when_already_below_cap():
-    from wbj.core.nullstates import Value
-
-    scores = [(1.0, Value.of(3.0, unit="score"))]
-    capped = bus._apply_dimension_cap(scores, cap=6.0)
-    assert capped[0][1].value == pytest.approx(3.0)
 
 
 def test_moat_capped_at_6_without_positive_spread(nvda_packet):

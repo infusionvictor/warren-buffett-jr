@@ -77,6 +77,7 @@ from wbj.schemas.levels import LevelsOutput
 from wbj.schemas.packet import OHLCVRow, Packet
 from wbj.specialists.common import (
     CategoryStats,
+    apply_dimension_cap,
     JudgmentRequest,
     MetricRow,
     SecurityRef,
@@ -254,29 +255,9 @@ def primary_trend_score(
 
 
 # ============================================================================
-# Dimension cap helper (SCORING.md "Gate / cap" column) -- same mechanism
-# as business.py/market.py's _apply_dimension_cap.
+# Scoring helper. (SCORING.md's "Gate / cap" column is applied via the shared
+# wbj.specialists.common.apply_dimension_cap -- imported above, not local.)
 # ============================================================================
-
-
-def _apply_dimension_cap(
-    metric_scores: list[tuple[float, Value]], *, cap: float
-) -> list[tuple[float, Value]]:
-    total = sum(w for w, _ in metric_scores)
-    valid = sum(w for w, v in metric_scores if v.is_valid)
-    if valid <= 0 or total <= 0:
-        return metric_scores
-    weighted_mean = sum(w * v.value for w, v in metric_scores if v.is_valid) / valid
-    if weighted_mean <= cap:
-        return metric_scores
-    factor = cap / weighted_mean
-    out: list[tuple[float, Value]] = []
-    for w, v in metric_scores:
-        if v.is_valid:
-            out.append((w, Value.of(v.value * factor, unit=v.unit, evidence_class=v.evidence_class, warnings=list(v.warnings))))
-        else:
-            out.append((w, v))
-    return out
 
 
 def _score_from_anchor(v: Value, anchors: list[tuple[float, float]]) -> float | None:
@@ -637,7 +618,7 @@ def run(packet: Packet, overlay: dict[str, Any] | None = None) -> TechnicalOutpu
     # ---- DIM_TREND (4 pts): single composite driver, capped at 6 without SMA200/200 sessions ----
     trend_scores: list[tuple[float, Value]] = [(1.0, Value.of(trend_score, unit="score"))]
     if not has_sma200:
-        trend_scores = _apply_dimension_cap(trend_scores, cap=6.0)
+        trend_scores = apply_dimension_cap(trend_scores, cap=6.0)
     trend_dim = Dimension(name=DIM_TREND, max_points=DIMENSION_MAX_POINTS[DIM_TREND], metric_scores=trend_scores)
 
     # ---- DIM_RS (4 pts) ----
@@ -653,7 +634,7 @@ def run(packet: Packet, overlay: dict[str, Any] | None = None) -> TechnicalOutpu
     # volume is entirely absent every member here is NOT_SCORABLE, so the
     # dimension is honestly NOT_SCORABLE (contributes 0 coverage, 0 points)
     # rather than being handed a synthetic mid score -- "missing evidence is
-    # never neutral" (SCORING.md). `_apply_dimension_cap(..., cap=5.0)` only
+    # never neutral" (SCORING.md). `apply_dimension_cap(..., cap=5.0)` only
     # bites when a genuine volume score above 5 exists to scale down (an
     # unadjusted-but-present series); with fully missing volume it is a
     # no-op (nothing valid), and the VOLUME_UNAVAILABLE_DEMAND_CAPPED flag
@@ -663,7 +644,7 @@ def run(packet: Packet, overlay: dict[str, Any] | None = None) -> TechnicalOutpu
         s = by_id[mid].score10
         vol_scores.append((0.25, Value.of(s, unit="score") if s is not None else Value.null(NullState.NOT_SCORABLE, unit="score")))
     if not volume_present:
-        vol_scores = _apply_dimension_cap(vol_scores, cap=5.0)
+        vol_scores = apply_dimension_cap(vol_scores, cap=5.0)
     demand_dim = Dimension(name=DIM_VOLUME, max_points=DIMENSION_MAX_POINTS[DIM_VOLUME], metric_scores=vol_scores)
 
     # ---- DIM_EARNINGS_GAP (3 pts) ----
