@@ -10,3 +10,7 @@ API/
 # Archivos temporales
 *.tmp
 ~$*
+
+# Research outputs generados (regenerables) — no versionar
+Reportes/*
+!Reportes/.gitkeep
