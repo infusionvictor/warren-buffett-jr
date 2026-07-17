@@ -165,7 +165,7 @@ def quick_scorecard(packet: dict, market: dict | None = None) -> dict:
         categories["technical"] = technical_category(
             market.get("history", []), market.get("benchmark", []))
         categories["valuation"] = valuation_category(packet, market)
-        categories["market"] = market_category(packet)
+        categories["market"] = market_category(packet, market.get("consensus"))
 
     rows: list[dict] = []
     covered_pts = 0.0

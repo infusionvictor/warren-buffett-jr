@@ -76,10 +76,13 @@ Resultado típico:
 |---|---|---|
 | Valuation | ✅ scored (~80%) | múltiplos PEG, yields vs tasa libre de riesgo, fair value, margen de seguridad |
 | Technical & Momentum | ◑ parcial (~66%) | falta earnings-gap y patrones de ruptura (requieren fechas de earnings / registros de niveles) |
-| Market & Growth | ◑ parcial (~35%) | falta TAM, revisiones de consenso y catalizadores (requieren keys FMP/FinnHub + investigación cualitativa del orquestador) |
+| Market & Growth | ◑ parcial (~35%, o ~55% con key) | growth-runway + apalancamiento operativo salen de fundamentales; la dimensión de **revisiones/consenso** se activa con una key FMP o FinnHub (crecimiento esperado, dispersión de estimados, tasa de sorpresas). TAM y catalizadores siguen fuera del alcance del motor (investigación cualitativa). |
 
-Agregar las keys de API (ver [`../API/README.md`](../API/README.md)) permitiría
-subir varias de estas dimensiones a cobertura completa en el futuro.
+**Para subir Market a ~55%:** pega una key `FMP_API_KEY` o `FINNHUB_API_KEY`
+en [`../API/.env`](../API/.env) (ver [`../API/README.md`](../API/README.md)) y
+vuelve a correr `wbj scorecard <T>`. La dimensión "Earnings and revenue
+revisions" pasa de N/S a puntuada (requiere ≥5 analistas). El código ya está
+cableado y probado con fixtures — solo falta la key.
 
 ## Notas de Windows
 

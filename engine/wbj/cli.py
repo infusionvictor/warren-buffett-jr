@@ -244,7 +244,7 @@ def analyze(ticker: str) -> None:
 
     settings, _, _ = _providers()
     p = _build_packet(ticker)
-    market = bundle(ticker, p, fmp_api_key=settings.fmp_api_key)
+    market = bundle(ticker, p, settings=settings)
     result = _compute(p, market)
 
     out = _out_dir(settings, ticker)
@@ -296,7 +296,7 @@ def scorecard(ticker: str) -> None:
 
     settings, _, _ = _providers()
     p = _build_packet(ticker)
-    market = bundle(ticker, p, fmp_api_key=settings.fmp_api_key)
+    market = bundle(ticker, p, settings=settings)
     sc = quick_scorecard(p, market)
     out = _out_dir(settings, ticker)
     (out / "scorecard.json").write_text(json.dumps(sc, indent=2), encoding="utf-8")

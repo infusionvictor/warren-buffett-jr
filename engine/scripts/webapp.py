@@ -84,7 +84,7 @@ def analyze(ticker: str) -> dict:
     packet = _build_packet(ticker)
     # One bundle covers price, 1y OHLCV+volume, SPY benchmark, risk-free and
     # targets — feeds the Technical/Valuation/Market scorers and the chart.
-    market = bundle(ticker, packet, fmp_api_key=settings.fmp_api_key)
+    market = bundle(ticker, packet, settings=settings)
     result = _compute(packet, market)
     targets = market["targets"]
     # Seed agent memory: every web analysis also records its prediction.

@@ -231,6 +231,34 @@ _A_REV_CAGR = [(-0.05, 0.0), (0.0, 3.0), (0.08, 6.0), (0.15, 8.0), (0.30, 10.0)]
 _A_ROE_CAP = [(0.0, 0.0), (0.08, 4.0), (0.15, 7.0), (0.30, 10.0)]
 _A_ACCEL = [(-0.15, 0.0), (-0.03, 3.0), (0.0, 5.0), (0.05, 8.0), (0.15, 10.0)]
 _A_INCR_MARGIN = [(-0.10, 0.0), (0.0, 3.0), (0.15, 5.0), (0.30, 7.5), (0.50, 10.0)]
+# Consensus / revisions dimension (needs FMP or FinnHub key).
+_MIN_ANALYSTS = 5  # Cerebro MKT-REVBR: requires >=5 estimates
+_A_FWD_GROWTH = [(-0.05, 0.0), (0.0, 4.0), (0.08, 6.0), (0.15, 8.0), (0.30, 10.0)]
+_A_DISPERSION = [(0.05, 10.0), (0.15, 7.0), (0.30, 4.0), (0.60, 0.0)]  # lower is tighter
+_A_BEAT_RATE = [(0.30, 2.0), (0.50, 5.0), (0.70, 8.0), (1.0, 10.0)]
+
+
+def _revisions_dim(consensus: dict | None) -> Dimension:
+    """Earnings & revenue revisions (4 pts) from analyst consensus.
+
+    Gated on >=5 analysts (Cerebro MKT-REVBR); NOT_SCORABLE otherwise so the
+    dimension only counts when real consensus evidence exists. True revision
+    *breadth over time* needs frozen prior snapshots, so this scores the
+    available consensus signal: forward growth, estimate dispersion (tighter
+    is better) and the recent surprise/beat rate (repeated misses penalized).
+    """
+    n = (consensus or {}).get("num_analysts") or 0
+    if not consensus or n < _MIN_ANALYSTS:
+        reason = ("requiere consenso (>=5 analistas) via FMP/FinnHub"
+                  if not consensus else f"solo {n} analistas (<{_MIN_ANALYSTS})")
+        return _dim("Earnings and revenue revisions", 4.0,
+                    [(1.0, _missing("revisions", reason))])
+    return _dim("Earnings and revenue revisions", 4.0, [
+        (0.20, _scored(_val(consensus.get("fwd_rev_growth"), "fwd_rev_growth"), _A_FWD_GROWTH)),
+        (0.15, _scored(_val(consensus.get("fwd_eps_growth"), "fwd_eps_growth"), _A_FWD_GROWTH)),
+        (0.25, _scored(_val(consensus.get("rev_dispersion"), "rev_dispersion"), _A_DISPERSION)),
+        (0.40, _scored(_val(consensus.get("beat_rate"), "beat_rate"), _A_BEAT_RATE)),
+    ])
 
 
 def _cagr(series: list[dict], years: int) -> float | None:
@@ -243,11 +271,14 @@ def _cagr(series: list[dict], years: int) -> float | None:
     return (end / begin) ** (1 / (len(rows) - 1)) - 1
 
 
-def market_category(packet: dict) -> Category:
-    """Score the fundamentals-derivable slice of Market & Growth.
+def market_category(packet: dict, consensus: dict | None = None) -> Category:
+    """Score Market & Growth from fundamentals plus (optional) analyst consensus.
 
-    TAM, revisions and catalysts stay NOT_SCORABLE (need consensus estimates
-    and qualitative research) so the category reports low coverage honestly.
+    Growth-runway + operating-leverage always score from EDGAR fundamentals.
+    The "Earnings and revenue revisions" dimension scores when an FMP/FinnHub
+    `consensus` bundle is supplied (>=5 analysts), lifting coverage ~35% ->
+    ~55%. TAM and catalysts stay NOT_SCORABLE (qualitative / market-sizing
+    research the compute engine can't derive), so Market remains partial.
     """
     a = packet["annual"]
     rev, ni, eq, op = a["revenue"], a["net_income"], a["equity"], a.get("operating_income", [])
@@ -280,8 +311,7 @@ def market_category(packet: dict) -> Category:
     # -- Dimensions requiring external market data / research.
     tam = _dim("TAM and industry tailwind", 5.0,
                [(1.0, _missing("tam", "requiere dimensionamiento de mercado externo"))])
-    revisions = _dim("Earnings and revenue revisions", 4.0,
-                     [(1.0, _missing("revisions", "requiere consenso congelado con timestamp (FMP/FinnHub)"))])
+    revisions = _revisions_dim(consensus)
     catalysts = _dim("Product and business catalysts", 4.0,
                      [(1.0, _missing("catalysts", "requiere investigacion cualitativa del orquestador"))])
 
