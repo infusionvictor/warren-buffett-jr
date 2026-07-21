@@ -220,15 +220,35 @@ def _edgar_value_at(
 
 def _edgar_total_debt(companyfacts: dict, target_date: str | None) -> Value:
     """EDGAR has no single "total debt" tag; sum the noncurrent + current
-    debt tags for the target period. If either half is unavailable, the
-    sum isn't safe to report — return MISSING rather than silently
-    treating a missing half as zero."""
+    debt tags for the target period, plus ASC-842 operating-lease
+    liabilities. If either debt half is unavailable, the sum isn't safe
+    to report — return MISSING rather than silently treating a missing
+    half as zero.
+
+    FMP's "totalDebt" aggregate includes operating-lease liabilities;
+    without adding EDGAR's matching tags, a lease-heavy filer's EDGAR sum
+    undershoots FMP's figure enough to trip the >5% CONFLICTED threshold
+    on an otherwise-agreeing pair of sources (observed live on NVDA:
+    FMP's totalDebt was exactly LongTermDebtNoncurrent + DebtCurrent +
+    OperatingLeaseLiabilityNoncurrent + OperatingLeaseLiabilityCurrent).
+    Post-2019 GAAP filers book the lease liability's present value
+    directly on the balance sheet, so no separate PV-of-payments
+    calculation is needed here. The lease tags themselves default to 0
+    when absent (pre-842 filers or non-lessees) rather than forcing the
+    whole figure to MISSING — their absence is a legitimate zero, not a
+    data gap the way a missing debt half is.
+    """
     long_term = _edgar_value_at(companyfacts, "us-gaap", "LongTermDebtNoncurrent", "USD", target_date)
     current = _edgar_value_at(companyfacts, "us-gaap", "DebtCurrent", "USD", target_date)
     if long_term.is_null or current.is_null:
         return Value.null(NullState.MISSING, unit="USD", source_name="EDGAR")
+    lease_noncurrent = _edgar_value_at(companyfacts, "us-gaap", "OperatingLeaseLiabilityNoncurrent", "USD", target_date)
+    lease_current = _edgar_value_at(companyfacts, "us-gaap", "OperatingLeaseLiabilityCurrent", "USD", target_date)
+    lease_total = (lease_noncurrent.value if lease_noncurrent.is_valid else 0) + (
+        lease_current.value if lease_current.is_valid else 0
+    )
     return Value.of(
-        long_term.value + current.value,
+        long_term.value + current.value + lease_total,
         unit="USD",
         source_name="EDGAR",
         period=target_date,
